@@ -282,6 +282,14 @@
   };
 
   const afterLogin = async () => {
+    const logoutBtn = document.getElementById('logoutBtn');
+    if (logoutBtn) {
+      logoutBtn.onclick = async () => {
+        try { await get('/api/auth/logout'); } catch (e) {}
+        state.LOGIN_OK = false;
+        location.reload();
+      };
+    }
     if (Z.modules && typeof Z.modules.initCommon === 'function') Z.modules.initCommon();
     await loadAllData();
     if (Z.modules && typeof Z.modules.renderAll === 'function') Z.modules.renderAll();

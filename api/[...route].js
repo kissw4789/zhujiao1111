@@ -3,7 +3,7 @@ const url = require('url');
 
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
-const APP_PASSWORD = process.env.APP_PASSWORD || '';
+const APP_PASSWORD = process.env.APP_PASSWORD || '661119';
 const SESSION_SECRET = process.env.SESSION_SECRET || 'dev-only-change-me';
 const SESSION_COOKIE = 'zhujiao_session';
 const TERM = '2026秋';
@@ -41,7 +41,9 @@ function cookieFlags(req) {
   return `Path=/; HttpOnly; SameSite=Lax${secure ? '; Secure' : ''}`;
 }
 function setSessionCookie(req, res) {
-  res.setHeader('Set-Cookie', `${SESSION_COOKIE}=${encodeURIComponent(makeSession())}; ${cookieFlags(req)}; Max-Age=${60 * 60 * 24 * 14}`);
+  // 不设置 Max-Age 和 Expires，使其成为标准的会话 Cookie（Session Cookie）
+  // 浏览器窗口或标签页关闭后自动失效，每次新打开必须重新输入密码
+  res.setHeader('Set-Cookie', `${SESSION_COOKIE}=${encodeURIComponent(makeSession())}; ${cookieFlags(req)}`);
 }
 function clearSessionCookie(req, res) {
   res.setHeader('Set-Cookie', `${SESSION_COOKIE}=; ${cookieFlags(req)}; Max-Age=0`);
