@@ -39,7 +39,7 @@
     
     const today = $('#homeToday');
     if (today) today.innerHTML = td.length ? '<table><tr><th>星期</th><th>时间</th><th>课程/班级 (点击看学生)</th><th>老师</th><th>教室</th><th>校区</th><th>在班</th></tr>' +
-      td.map(r => `<tr><td>${esc(r.星期 || '')}</td><td class="tk">${esc(r.时间 || '')}</td><td><a href="javascript:void(0)" class="home-cls-link" data-cls="${esc(r.班号 || classRowLabel(r))}" style="color:#0046B8;font-weight:700;text-decoration:none;">${esc(classRowLabel(r))}</a></td><td>${esc(r.老师 || '')}</td><td>${esc(r.教室 || '')}</td><td class="muted">${esc(r.校区 || '')}</td><td><b style="color:#059669">${(r.在班 || []).length || r.在班人数 || 0}人</b></td></tr>`).join('') + '</table>' : '<div class="note">今日无排课</div>';
+      td.map(r => `<tr><td>${esc(r.星期 || '')}</td><td class="tk">${esc(r.时间 || '')}</td><td><a href="javascript:void(0)" class="home-cls-link" data-cls="${esc(r.班号 || classRowLabel(r))}" style="color:#2563EB;font-weight:700;text-decoration:none;">${esc(classRowLabel(r))}</a></td><td>${esc(r.老师 || '')}</td><td>${esc(r.教室 || '')}</td><td class="muted">${esc(r.校区 || '')}</td><td><b style="color:#059669">${(r.在班 || []).length || r.在班人数 || 0}人</b></td></tr>`).join('') + '</table>' : '<div class="note">今日无排课</div>';
     
     if (today) {
       today.querySelectorAll('.home-cls-link').forEach(el => {
@@ -188,45 +188,59 @@
     const rows = schFiltered();
     $('#schCount').textContent = `课表 · ${rows.length} 项 (已隐藏1号外租教室)`;
     const pg = st.PG.sch, slice = rows.slice((pg.page - 1) * pg.size, pg.page * pg.size);
-    box.innerHTML = slice.length ? `<table><tr><th>期次</th><th>星期</th><th>时段</th><th>班级 (点击看学生)</th><th>班型</th><th>老师</th><th>教室</th><th>校区</th><th>人数</th><th>操作</th></tr>` + slice.map(r => `<tr><td>${termDispL(r.期 || '—')}</td><td>${esc(r.星期 || '—')}</td><td class="tk">${esc(r.时间 || '—')}</td><td><a href="javascript:void(0)" class="sch-cls-link" data-cls="${esc(r.班号 || classRowLabel(r))}" style="color:#0046B8;font-weight:700;text-decoration:none;">${esc(classRowLabel(r))}</a></td><td>${r.班型 ? typeBadge(r.班型) : '<span class="muted">—</span>'}${subjBadge(r.学科)}</td><td>${esc(r.老师 || '—')}</td><td>${esc(r.教室 || '—')}</td><td class="muted">${esc(r.校区 || '—')}</td><td><b style="color:#059669">${r.在班人数 || r.人数 || 0}人</b></td><td><span class="btn sub sm" data-cls="${esc(r.班号 || classRowLabel(r))}">学生名单</span></td></tr>`).join('') + '</table>' : '<div class="note">没有符合条件的班级</div>';
+    box.innerHTML = slice.length ? `<table><tr><th>期次</th><th>星期</th><th>时段</th><th>班级 (点击看学生)</th><th>班型</th><th>老师</th><th>教室</th><th>校区</th><th>人数</th><th>操作</th></tr>` + slice.map(r => `<tr><td>${termDispL(r.期 || '—')}</td><td>${esc(r.星期 || '—')}</td><td class="tk">${esc(r.时间 || '—')}</td><td><a href="javascript:void(0)" class="sch-cls-link" data-cls="${esc(r.班号 || classRowLabel(r))}" style="color:#2563EB;font-weight:700;text-decoration:none;">${esc(classRowLabel(r))}</a></td><td>${r.班型 ? typeBadge(r.班型) : '<span class="muted">—</span>'}${subjBadge(r.学科)}</td><td>${esc(r.老师 || '—')}</td><td>${esc(r.教室 || '—')}</td><td class="muted">${esc(r.校区 || '—')}</td><td><b style="color:#059669">${r.在班人数 || r.人数 || 0}人</b></td><td><span class="btn sub sm" data-cls="${esc(r.班号 || classRowLabel(r))}">学生名单</span></td></tr>`).join('') + '</table>' : '<div class="note">没有符合条件的班级</div>';
     renderPager($('#schPager'), rows.length, pg.page, pg.size, (p, s) => { st.PG.sch = { page: p, size: s }; renderSchedule(); });
     box.querySelectorAll('[data-cls], .sch-cls-link').forEach(b => b.onclick = () => { const row = rows.find(r => (r.班号 || classRowLabel(r)) === b.dataset.cls); if (row) classDetailDlg(row); });
-    renderScheduleMatrix();
+  }
+  function fillMatrixFilters() {
+    const camps = [...new Set(st.SCHEDULE.filter(r => r.来源 !== '教室租用').map(r => r.校区))].filter(Boolean).sort();
+    const campEl = $('#schMatrixCampus');
+    if (campEl) campEl.innerHTML = camps.map(c => `<option${c === '贵都校区' ? ' selected' : ''}>${esc(c)}</option>`).join('');
+    const dayW = {'周一':1,'周二':2,'周三':3,'周四':4,'周五':5,'周六':6,'周日':7};
+    const days = [...new Set(st.SCHEDULE.filter(r => r.来源 !== '教室租用').map(r => r.星期))].filter(Boolean).sort((a,b) => (dayW[a]||99) - (dayW[b]||99));
+    const wn = ['周日','周一','周二','周三','周四','周五','周六'];
+    const todayDay = wn[new Date().getDay()];
+    const defaultDay = days.includes(todayDay) ? todayDay : days[0] || '周六';
+    const dayEl = $('#schMatrixDay');
+    if (dayEl) dayEl.innerHTML = days.map(d => `<option${d === defaultDay ? ' selected' : ''}>${esc(d)}</option>`).join('');
   }
   function renderScheduleMatrix() {
-    const matrixBox = $('#schMatrixView'); if (!matrixBox) return;
-    const campus = ($('#schCampus') || {}).value || '贵都校区';
-    const rows = st.SCHEDULE.filter(r => String(r.教室 || '').trim() !== '1号' && !String(r.课程 || '').includes('租用') && r.来源 !== '教室租用' && (!campus || r.校区 === campus));
-    const rooms = [...new Set(rows.map(r => r.教室).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b), 'zh-Hans-CN', { numeric: true }));
-    const slots = [
-      { name: '周五晚', day: '周五', start: '18:00', end: '21:00' },
-      { name: '周六上午', day: '周六', start: '08:00', end: '12:30' },
-      { name: '周六下午', day: '周六', start: '13:00', end: '18:00' },
-      { name: '周六晚上', day: '周六', start: '18:00', end: '21:00' },
-      { name: '周日上午', day: '周日', start: '08:00', end: '12:30' },
-      { name: '周日下午', day: '周日', start: '13:00', end: '18:00' },
-      { name: '周日晚上', day: '周日', start: '18:00', end: '21:00' }
-    ];
-    let html = `<div style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;"><div style="font-weight:700;font-size:13.5px;">校区教室使用时空矩阵看板 · ${esc(campus)}</div><div class="note" style="margin:0;">浅蓝/浅金：有课占用 | 浅灰虚线：当前空闲</div></div><table class="table-box" style="border:1px solid #E5E7EB;text-align:center;"><thead><tr style="background:#F3F4F6;"><th style="width:100px;text-align:center;">教室</th>${slots.map(s => `<th style="text-align:center;font-size:12px;">${s.name}</th>`).join('')}</tr></thead><tbody>`;
-    rooms.forEach(rm => {
-      html += `<tr><td style="font-weight:700;background:#F9FAFB;">${esc(rm)}</td>`;
-      slots.forEach(slot => {
-        const matched = rows.find(r => r.教室 === rm && r.星期 === slot.day && isTimeOverlap(r.时间, slot.start, slot.end));
-        if (matched) {
-          html += `<td style="padding:4px;"><div style="background:#EEF2FF;border:1px solid #C7D2FE;border-radius:6px;padding:6px 4px;font-size:11.5px;color:#1E40AF;cursor:pointer;" onclick="Z.modules.openClassByNo('${esc(matched.班号 || classRowLabel(matched))}')"><b style="display:block;margin-bottom:2px;">${esc(classRowLabel(matched))}</b><span style="color:#4B5563;">${esc(matched.时间)} · ${esc(matched.老师)}</span></div></td>`;
-        } else {
-          html += `<td style="padding:4px;"><div style="border:1px dashed #E5E7EB;border-radius:6px;padding:6px 4px;font-size:11px;color:#9CA3AF;">空闲</div></td>`;
-        }
-      });
-      html += `</tr>`;
+    const grid = $('#schMatrixGrid'); if (!grid) return;
+    const campus = ($('#schMatrixCampus') || {}).value || '贵都校区';
+    const day = ($('#schMatrixDay') || {}).value || '周六';
+    const items = st.SCHEDULE.filter(r => r.校区 === campus && r.星期 === day && String(r.教室||'').trim() !== '1号' && !String(r.课程||'').includes('租用') && r.来源 !== '教室租用');
+    const roomMap = {};
+    items.forEach(r => { const rm = r.教室 || '未知'; (roomMap[rm] = roomMap[rm] || []).push(r); });
+    Object.values(roomMap).forEach(arr => arr.sort((a,b) => String(a.时间||'').localeCompare(String(b.时间||''))));
+    const skipRooms = ['办公室','学霸休息室'];
+    const allRooms = [...new Set(st.SCHEDULE.filter(r => r.校区 === campus && String(r.教室||'').trim() !== '1号' && !skipRooms.includes(String(r.教室||'').trim()) && !String(r.课程||'').includes('租用') && r.来源 !== '教室租用').map(r => r.教室))].filter(Boolean);
+    const roomOrd = n => { const m = String(n).match(/^(\d+)号$/); return m ? [0, Number(m[1])] : [1, n]; };
+    allRooms.sort((a,b) => { const [ta,na]=roomOrd(a),[tb,nb]=roomOrd(b); if(ta!==tb) return ta-tb; return typeof na==='number'? na-nb : String(na).localeCompare(String(nb),'zh'); });
+    const labels = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    if (!allRooms.length) { grid.innerHTML = '<div class="note">该校区暂无教室排课数据</div>'; return; }
+    let html = `<div class="room-matrix-header"><span class="rmh-campus">${esc(campus)}</span><span class="rmh-day">${esc(day)}</span><span class="rmh-info">${items.length} 节课 · ${allRooms.length} 间教室</span></div><div class="room-grid">`;
+    allRooms.forEach((room, i) => {
+      const courses = roomMap[room] || [];
+      const letter = labels[i] || String(i+1);
+      html += `<div class="room-card${courses.length ? '' : ' room-idle-card'}"><div class="room-card-head"><span class="room-letter">${letter}</span><span class="room-num">${esc(room)}</span>${courses.length ? `<span class="room-count">${courses.length}节</span>` : '<span class="room-free-tag">空闲</span>'}</div>`;
+      if (courses.length) {
+        html += '<div class="room-courses">';
+        courses.forEach(r => {
+          const cn = classRowLabel(r), cnt = (r.在班||r.enrolledList||[]).length || r.在班人数 || r.人数 || 0;
+          const tp = r.班型 || '', colorCls = tp.includes('创新')||tp.includes('自招') ? 'rc-gold' : tp.includes('物理')||(r.学科||'').includes('物理') ? 'rc-green' : 'rc-blue';
+          html += `<div class="room-course ${colorCls}" data-cls-no="${esc(r.班号||cn)}"><div class="rc-time">${esc(r.时间||'—')}</div><div class="rc-name">${esc(cn)}</div><div class="rc-bottom"><span class="rc-teacher">${esc(r.老师||'—')}</span><span class="rc-stu">${cnt}人</span></div></div>`;
+        });
+        html += '</div>';
+      } else {
+        html += `<div class="room-idle-body">当日无课程安排</div>`;
+      }
+      html += '</div>';
     });
-    html += `</tbody></table>`;
-    matrixBox.innerHTML = html;
-  }
-  function isTimeOverlap(timeStr, startLimit, endLimit) {
-    if (!timeStr || !timeStr.includes('-')) return false;
-    const [t1, t2] = timeStr.split('-');
-    return (t1 <= endLimit && t2 >= startLimit);
+    html += '</div>';
+    grid.innerHTML = html;
+    grid.querySelectorAll('.room-course').forEach(el => {
+      el.onclick = () => { const row = st.SCHEDULE.find(r => (r.班号||classRowLabel(r)) === el.dataset.clsNo); if (row) classDetailDlg(row); };
+    });
   }
   function classDetailDlg(r) {
     dlg('班级学生花名册 · ' + classRowLabel(r), `<div class="kv"><div class="i"><span class="l">上课时间</span><b>${esc(r.星期 || '')} ${esc(r.时间 || '')}</b></div><div class="i"><span class="l">任课老师</span>${esc(r.老师 || '')}</div><div class="i"><span class="l">教室校区</span>${esc(r.校区 || '')} ${esc(r.教室 || '')}</div><div class="i"><span class="l">在班人数</span><b style="color:#059669">${r.在班人数 || (r.在班 || []).length || 0} 人</b></div></div>${(r.enrolledList || r.在班 || []).length ? `<table style="margin-top:12px;"><tr><th>序号</th><th>学员姓名</th><th>年级</th><th>联系电话</th><th>操作</th></tr>${(r.enrolledList || r.在班 || []).map((x, i) => `<tr><td class="muted">${i + 1}</td><td><b>${esc(x.姓名 || x.name)}</b></td><td>${esc(x.年级 || x.grade || '')}</td><td class="muted">${esc(x.电话 || x.phone || '')}</td><td><span class="btn sm" style="background:#059669;color:#fff;" data-goto-id="${esc(x.id)}">进入学员档案 →</span></td></tr>`).join('')}</table>` : '<div class="note">当前班级暂无在班学员</div>'}`, box => { box.querySelectorAll('[data-goto-id]').forEach(b => b.onclick = () => { dlgClose(); location.hash = 'profile/' + encodeURIComponent(b.dataset.gotoId); }); });
@@ -239,7 +253,7 @@
     if (kw) rows = rows.filter(r => (r.姓名 || '').toLowerCase().includes(kw) || (r.班级 || '').toLowerCase().includes(kw));
     const stats = $('#leaveStats'); if (stats) stats.innerHTML = [['累计请假人次', rows.length, '次'], ['累计折算退费', '¥' + rows.reduce((s, x) => s + (Number(x.折算金额) || 0), 0), ''], ['涉及班级数', new Set(rows.map(r => r.班级)).size, '个']].map(x => `<div class="kpi-card"><div class="kpi-k">${x[0]}</div><div class="kpi-v">${x[1]}<span>${x[2]}</span></div></div>`).join('');
     const box = $('#leaveTable'); if (!box) return;
-    box.innerHTML = rows.length ? `<table><tr><th>请假单号</th><th>学员姓名</th><th>请假班级</th><th>请假日期</th><th>原因/事由</th><th>折算退费金额</th><th>登记时间</th><th>操作</th></tr>${rows.map(r => `<tr><td class="muted">${esc(r.lid)}</td><td class="tk"><b>${esc(r.姓名)}</b></td><td>${esc(r.班级)}</td><td class="muted">${esc(r.日期)}</td><td>${esc(r.原因)}</td><td><b style="color:#0046B8;">¥${esc(r.折算金额)}</b></td><td class="muted">${esc(r.创建时间 || '')}</td><td><span class="btn sub sm" style="color:#DC2626;border-color:#FECACA;" data-del-leave="${esc(r.lid)}">撤销</span></td></tr>`).join('')}</table>` : '<div class="note">暂无请假与退费记录</div>';
+    box.innerHTML = rows.length ? `<table><tr><th>请假单号</th><th>学员姓名</th><th>请假班级</th><th>请假日期</th><th>原因/事由</th><th>折算退费金额</th><th>登记时间</th><th>操作</th></tr>${rows.map(r => `<tr><td class="muted">${esc(r.lid)}</td><td class="tk"><b>${esc(r.姓名)}</b></td><td>${esc(r.班级)}</td><td class="muted">${esc(r.日期)}</td><td>${esc(r.原因)}</td><td><b style="color:#2563EB;">¥${esc(r.折算金额)}</b></td><td class="muted">${esc(r.创建时间 || '')}</td><td><span class="btn sub sm" style="color:#DC2626;border-color:#FECACA;" data-del-leave="${esc(r.lid)}">撤销</span></td></tr>`).join('')}</table>` : '<div class="note">暂无请假与退费记录</div>';
     box.querySelectorAll('[data-del-leave]').forEach(b => b.onclick = async () => { if (!confirm('确认撤销这条请假记录？')) return; const r = await api.post('/api/leave/delete', { lid: b.dataset.delLeave }); if (r.ok) { await loadLeaves(); toast('已撤销'); } });
   }
   function openLeaveModal(studentId = '', studentName = '', defaultClass = '') {
@@ -387,7 +401,7 @@
         `)}
       </div>
       ${FG('沟通要点与学情内容 <b style="color:#B91C1C">*</b>', `
-        <textarea id="af-content" rows="4" style="width:100%;border:1px solid #E5E7EB;border-radius:6px;padding:8px;font-size:13px;resize:vertical;" placeholder="记录沟通核心内容（如：与妈妈通话，孩子反馈平面几何辅助线掌握较弱，已预约周六课后进行答疑...）"></textarea>
+        <textarea id="af-content" rows="4" style="width:100%;border:1px solid #E2E8F0;border-radius:6px;padding:8px;font-size:13px;resize:vertical;" placeholder="记录沟通核心内容（如：与妈妈通话，孩子反馈平面几何辅助线掌握较弱，已预约周六课后进行答疑...）"></textarea>
       `)}
       ${FG('记录人', '<input id="af-creator" value="助教">')}
       ${dlgFoot('确认保存记录')}
@@ -461,7 +475,7 @@
       const box = $('#pfFollowList');
       if (!box) return;
       box.innerHTML = list.length ? `<div style="display:flex;flex-direction:column;gap:12px;">` + list.map(item => `
-        <div style="background:#F9FAFB;border:1px solid #E5E7EB;border-left:4px solid #0046B8;border-radius:6px;padding:12px 14px;">
+        <div style="background:#F9FAFB;border:1px solid #E2E8F0;border-left:4px solid #2563EB;border-radius:6px;padding:12px 14px;">
           <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:12px;color:#6B7280;">
             <span><b style="color:#111827;font-size:13px;">${esc(item.type)}</b> · <span class="badge blue">${esc(item.subject || '全科')}</span> 由 ${esc(item.creator || '助教')} 记录</span>
             <span>${esc(item.createdAt ? item.createdAt.slice(0, 16).replace('T', ' ') : '')}</span>
@@ -485,9 +499,10 @@
 
     const orders = d.订单 || []; $('#pfPay').innerHTML = `<div class="kv"><div class="i"><span class="l">报名次数</span>${a.次数 || (d.报名 || []).length} 次</div><div class="i"><span class="l">累计已缴</span>${d.累计缴费 ? d.累计缴费 + ' 元' : '—'}</div><div class="i"><span class="l">订单数</span>${orders.length} 条</div></div>` + (orders.length ? '<table><tr><th>下单时间</th><th>商品</th><th>金额</th><th>状态</th></tr>' + orders.map(o => `<tr><td class="muted">${esc(o.下单)}</td><td>${esc(o.商品)}</td><td>${esc(o.金额)}</td><td>${badge(o.状态, o.状态 === '已支付' ? 'free' : 'gray')}</td></tr>`).join('') + '</table>' : '<div class="note">无订单记录</div>');
     const terms = {}; (d.报名 || []).forEach(r => { (terms[r.期] = terms[r.期] || []).push(r); });
-    $('#pfTerms').innerHTML = Object.keys(terms).sort().reverse().map(k => `<div class="term open"><div class="term-h"><span class="arrow">▼</span>${termDispL(k)} · ${terms[k].length} 门课</div><div class="term-b"><table><tr><th>班级</th><th>校区</th><th>老师</th><th>开课 → 结课</th><th>状态</th><th></th></tr>${terms[k].map(r => `<tr><td>${esc(r.班级)}${r.源状态 === '历史在班学生' ? ' <span class="badge gray">转出</span>' : ''}${r.作废 ? ' <span class="tg-void">已作废</span>' : ''}</td><td class="muted">${esc(r.校区)}</td><td>${esc(r.老师)}</td><td class="muted">${esc(r.开课)} → ${esc(r.结课)}</td><td>${r.作废 || r.源状态 === '历史在班学生' ? '—' : stTag(r.状态)}</td><td><span class="btn sub sm" data-ee="${esc(r.eid || '')}">编辑</span><span class="btn sub sm" data-vd="${esc(r.eid || '')}" data-doing="${r.作废 ? '0' : '1'}" style="color:${r.作废 ? '#059669' : '#DC2626'}">${r.作废 ? '恢复' : '作废'}</span></td></tr>`).join('')}</table></div></div>`).join('') || '<div class="note">没有报名记录</div>';
+    $('#pfTerms').innerHTML = Object.keys(terms).sort().reverse().map(k => `<div class="term open"><div class="term-h"><span class="arrow">▼</span>${termDispL(k)} · ${terms[k].length} 门课</div><div class="term-b"><table><tr><th>班级</th><th>校区</th><th>老师</th><th>开课 → 结课</th><th>状态</th><th></th></tr>${terms[k].map(r => `<tr><td>${esc(r.班级)}${r.源状态 === '历史在班学生' ? ' <span class="badge gray">转出</span>' : ''}${r.作废 ? ' <span class="tg-void">已作废</span>' : ''}</td><td class="muted">${esc(r.校区)}</td><td>${esc(r.老师)}</td><td class="muted">${esc(r.开课)} → ${esc(r.结课)}</td><td>${r.作废 || r.源状态 === '历史在班学生' ? '—' : stTag(r.状态)}</td><td style="display:flex;gap:4px;flex-wrap:wrap;"><span class="btn sub sm" data-ee="${esc(r.eid || '')}">编辑</span><span class="btn sub sm" data-vd="${esc(r.eid || '')}" data-doing="${r.作废 ? '0' : '1'}" style="color:${r.作废 ? '#059669' : '#DC2626'}">${r.作废 ? '恢复' : '作废'}</span>${!r.作废 && r.状态 !== '已结课' && r.源状态 !== '历史在班学生' ? `<span class="btn sm" data-refund-eid="${esc(r.eid || '')}" data-refund-cls="${esc(r.班级 || '')}" style="background:#DC2626;color:#fff;">退费退班</span>` : ''}</td></tr>`).join('')}</table></div></div>`).join('') || '<div class="note">没有报名记录</div>';
     $('#pfTerms').querySelectorAll('[data-ee]').forEach(b => b.onclick = () => { const e = (d.报名 || []).find(x => x.eid === b.dataset.ee); if (e) editEnrollDlg(a, e); });
     $('#pfTerms').querySelectorAll('[data-vd]').forEach(b => b.onclick = () => voidEnroll(b.dataset.vd, b.dataset.doing === '1'));
+    $('#pfTerms').querySelectorAll('[data-refund-eid]').forEach(b => b.onclick = () => refundEnroll(a, b.dataset.refundEid, b.dataset.refundCls));
     showPage('profile');
   }
   async function openFamily(id) {
@@ -516,8 +531,7 @@
   function renderOutlineDetail() { if (!$('#olPretty')) return; const rows = curOutline(), sys = $('#olSys').value, tr = $('#olTrack').value, se = $('#olSeason').value, seName = SEASON_NAME[se] || se; $('#olCount').textContent = `共 ${rows.length} 讲 · ${SYS_SUBJECT[sys] || ''}`; $('#olTitle').textContent = `${sys || ''} · ${tr || ''} · ${seName || ''}内容明细`; $('#olPretty').innerHTML = rows.length ? rows.map(r => `<div class="ol-row"><span class="n">第${r.n}讲</span><span><span class="t">${esc(r.topic)}</span>${r.module ? `<span class="m">${esc(r.module)}</span>` : ''}${r.desc ? `<div class="d">${esc(r.desc)}</div>` : ''}</span></div>`).join('') : '<div class="note">没有该大纲数据</div>'; }
 
   function renderRep() { const el = $('#repStu'); if (el) el.innerHTML = st.ROSTER.map(a => `<option value="${esc(a.id)}">${esc(a.姓名)}（${esc(a.年级 || '')}${(a.当期 && a.当期[0] || {}).班级 ? ' · ' + esc(a.当期[0].班级) : ' · 无当期班'}）</option>`).join(''); }
-  function renderOpLog() { const list = st.OPLOG || []; const acts = [...new Set(list.map(l => l.动作))].filter(Boolean).sort(); const act = $('#logAction'); if (act) act.innerHTML = '<option value="">全部动作</option>' + acts.map(a => `<option>${esc(a)}</option>`).join(''); const box = $('#logList'); if (!box) return; box.innerHTML = list.length ? '<table><tr><th>时间</th><th>动作</th><th>对象</th><th>详情</th></tr>' + list.slice(0, 200).map(l => `<tr><td class="muted">${esc(l.时间 || '')}</td><td>${badge(l.动作 || '', 'blue')}</td><td>${esc(l.对象 || '')}</td><td class="muted">${esc(l.班级 || l.变更 || '')}</td></tr>`).join('') + '</table>' : '<div class="note">暂无记录</div>'; }
-  function renderSync() { if ($('#syncStatus')) $('#syncStatus').textContent = '云端数据库模式：机构自动同步暂未启用；当前数据来自最新导入和在线增量录入。'; if ($('#syncReport')) $('#syncReport').innerHTML = '<div class="note">如需再次导入机构导出的 Excel，请走导入脚本。</div>'; }
+  function renderSync() {}
 
   function editStudentDlg(a) { dlg('编辑学员 · ' + a.姓名, `${FG('姓名 <b style="color:#B91C1C">*</b>', `<input id="es-name" value="${esc(a.姓名)}">`)}<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">${FG('联系电话', `<input id="es-phone" value="${esc(a.电话 || '')}">`)}${FG('年级', `<select id="es-grade"><option value=""></option>${GRADES.map(g => `<option${g === a.年级 ? ' selected' : ''}>${g}</option>`).join('')}</select>`)}</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">${FG('性别', `<select id="es-sex"><option value=""></option><option${a.性别 === '男' ? ' selected' : ''}>男</option><option${a.性别 === '女' ? ' selected' : ''}>女</option></select>`)}${FG('备注', `<input id="es-note" value="${esc(a.备注 || '')}">`)}</div>${dlgFoot('保存')}`, box => { box.querySelector('#dlgCancel').onclick = dlgClose; box.querySelector('#dlgOk').onclick = async () => { const body = { id: a.id, 姓名: box.querySelector('#es-name').value.trim(), 电话: box.querySelector('#es-phone').value.trim(), 年级: box.querySelector('#es-grade').value, 性别: box.querySelector('#es-sex').value, 备注: box.querySelector('#es-note').value.trim() }; if (!body.姓名) return dlgErr('姓名必填'); const r = await api.post('/api/student/edit', body); if (!r.ok) return dlgErr(r.错误 || '保存失败'); dlgClose(); await refresh(); if (location.hash.startsWith('#profile/')) openProfile(a.id); else renderStudents(); }; }); }
   function addStudentDlg(familyId = '') {
@@ -527,8 +541,8 @@
         ${FG('联系电话 <b style="color:#B91C1C">*</b>', '<input id="ns-phone" placeholder="家长手机号">')}
         ${FG('就读年级', `<select id="ns-grade"><option value=""></option>${GRADES.map(g => `<option>${g}</option>`).join('')}</select>`)}
       </div>
-      <div style="background:#F6F8FB;border:1px solid #E5E7EB;border-radius:8px;padding:12px;margin-top:8px;">
-        <div style="font-weight:700;font-size:12.5px;color:#0046B8;margin-bottom:8px;">选择报读班级（自动带出上课时间、任课老师与校区）</div>
+      <div style="background:#F6F8FB;border:1px solid #E2E8F0;border-radius:8px;padding:12px;margin-top:8px;">
+        <div style="font-weight:700;font-size:12.5px;color:#2563EB;margin-bottom:8px;">选择报读班级（自动带出上课时间、任课老师与校区）</div>
         ${FG('选择班级', '<input id="ns-class" list="classData" placeholder="输入或下拉选择班级全称">')}
         <div id="ns-class-preview" style="font-size:11.5px;color:#4B5563;line-height:1.6;margin-top:6px;min-height:20px;"></div>
       </div>
@@ -591,6 +605,38 @@
   function addEnrollDlg(a) { dlg('新增报名 · ' + a.姓名, `${FG('班级名称 <b style="color:#B91C1C">*</b>', '<input id="ae-class" list="classData">')}${FG('开课日期', `<input id="ae-start" type="date" value="${todayStr()}">`)}${FG('结课日期', '<input id="ae-end" type="date">')}${FG('老师', '<input id="ae-teacher">')}${FG('校区', '<input id="ae-campus">')}${FG('学科', '<select id="ae-subject"><option value=""></option><option>数学</option><option>物理</option></select>')}${FG('课费', '<input id="ae-fee" type="number">')}${dlgFoot('保存')}`, box => { box.querySelector('#dlgCancel').onclick = dlgClose; box.querySelector('#dlgOk').onclick = async () => { const body = { id: a.id, 班级: box.querySelector('#ae-class').value.trim(), 开课: box.querySelector('#ae-start').value, 结课: box.querySelector('#ae-end').value, 老师: box.querySelector('#ae-teacher').value.trim(), 校区: box.querySelector('#ae-campus').value.trim(), 学科: box.querySelector('#ae-subject').value, 课费: box.querySelector('#ae-fee').value }; if (!body.班级) return dlgErr('班级名称必填'); const r = await api.post('/api/enrollment', body); if (!r.ok) return dlgErr(r.错误 || '保存失败'); dlgClose(); await refresh(); openProfile(a.id); }; }); }
   function editEnrollDlg(a, e) { dlg('编辑报名 · ' + a.姓名, `${FG('班级名称', `<input id="ee-class" value="${esc(e.班级)}" list="classData">`)}${FG('开课日期', `<input id="ee-start" type="date" value="${esc(e.开课 || '')}">`)}${FG('结课日期', `<input id="ee-end" type="date" value="${esc(e.结课 || '')}">`)}${FG('老师', `<input id="ee-teacher" value="${esc(e.老师 || '')}">`)}${FG('校区', `<input id="ee-campus" value="${esc(e.校区 || '')}">`)}${FG('学科', `<input id="ee-subject" value="${esc(e.学科 || '')}">`)}${FG('课费', `<input id="ee-fee" type="number" value="${esc(e.课费 || '')}">`)}${dlgFoot('保存')}`, box => { box.querySelector('#dlgCancel').onclick = dlgClose; box.querySelector('#dlgOk').onclick = async () => { const body = { eid: e.eid, 班级: box.querySelector('#ee-class').value.trim(), 开课: box.querySelector('#ee-start').value, 结课: box.querySelector('#ee-end').value, 老师: box.querySelector('#ee-teacher').value.trim(), 校区: box.querySelector('#ee-campus').value.trim(), 学科: box.querySelector('#ee-subject').value.trim(), 课费: box.querySelector('#ee-fee').value }; const r = await api.post('/api/enrollment/edit', body); if (!r.ok) return dlgErr(r.错误 || '保存失败'); dlgClose(); await refresh(); openProfile(a.id); }; }); }
   async function voidEnroll(eid, doing) { if (doing && !confirm('确认作废这条报名？')) return; const r = await api.post('/api/enrollment/void', { eid, 作废: doing }); if (!r.ok) return alert(r.错误 || '操作失败'); await refresh(); if (location.hash.startsWith('#profile/')) openProfile(location.hash.slice(9)); }
+  function refundEnroll(student, eid, className) {
+    dlg('退费退班 · ' + student.姓名, `
+      <div style="background:#FEF2F2;border:1px solid #FECACA;border-radius:8px;padding:12px 14px;margin-bottom:16px;color:#991B1B;font-size:13px;line-height:1.5;">
+        <b>确认将 ${esc(student.姓名)} 从【${esc(className)}】退费退班？</b><br>
+        退班后该学员将从此班级的在班名单中移除，报名记录标记为"退费"状态。
+      </div>
+      ${FG('退费原因', `<select id="rf-reason"><option>家长主动退费</option><option>课程调整</option><option>转班/转校</option><option>其他原因</option></select>`)}
+      ${FG('退费金额 (元)', `<input id="rf-amount" type="number" placeholder="选填">`)}
+      ${FG('备注', `<input id="rf-note" placeholder="选填">`)}
+      ${dlgFoot('确认退费退班')}
+    `, box => {
+      box.querySelector('#dlgCancel').onclick = dlgClose;
+      box.querySelector('#dlgOk').onclick = async () => {
+        const reason = box.querySelector('#rf-reason').value;
+        const amount = box.querySelector('#rf-amount').value;
+        const note = box.querySelector('#rf-note').value.trim();
+        const okBtn = box.querySelector('#dlgOk');
+        if (okBtn.disabled) return;
+        okBtn.disabled = true; okBtn.textContent = '处理中...';
+        try {
+          const r = await api.post('/api/enrollment/void', { eid, 作废: true });
+          if (!r.ok) { okBtn.disabled = false; okBtn.textContent = '确认退费退班'; return dlgErr(r.错误 || '操作失败'); }
+          await api.post('/api/leave/record', {
+            studentId: student.id, 姓名: student.姓名, 班级: className,
+            日期: todayStr(), 折算金额: amount || 0, 原因: '退费退班: ' + reason, 备注: note
+          }).catch(() => {});
+          dlgClose(); toast('已成功退费退班'); await refresh();
+          if (location.hash.startsWith('#profile/')) openProfile(student.id);
+        } catch (e) { okBtn.disabled = false; okBtn.textContent = '确认退费退班'; dlgErr('网络异常，请重试'); }
+      };
+    });
+  }
 
   async function refresh() { await Z.bootstrap.loadAllData(); renderAll(); }
   function initCommon() {
@@ -613,15 +659,14 @@
     $$('#p-rec [data-rf]').forEach(c => c.onclick = () => { st.filters.rnuFilter = c.dataset.rf; renderRenew(); });
     $('#expGrade') && ($('#expGrade').onchange = renderExpansion); $('#expType') && ($('#expType').onchange = renderExpansion); $('#expFollow') && ($('#expFollow').onchange = renderExpansion); $('#expSearch') && ($('#expSearch').oninput = renderExpansion);
     $('#olSys') && ($('#olSys').onchange = fillTrack); $('#olTrack') && ($('#olTrack').onchange = fillSeason); $('#olSeason') && ($('#olSeason').onchange = renderOutlineDetail);
-    $('#logAction') && ($('#logAction').onchange = () => { st.filters.logAction = $('#logAction').value; renderOpLog(); });
-    $('#logSearch') && ($('#logSearch').oninput = e => { st.filters.logKw = e.target.value; renderOpLog(); });
     $('#schToggleView') && ($('#schToggleView').onclick = () => {
       const isMatrix = !$('#schMatrixView').classList.contains('hide');
       $('#schMatrixView').classList.toggle('hide', isMatrix);
-      $('#schListView').classList.toggle('hide', !isMatrix);
-      $('#schPager').classList.toggle('hide', !isMatrix);
-      $('#schToggleView').textContent = isMatrix ? '切换教室时空矩阵' : '切换普通列表视图';
+      $('#schListWrap').classList.toggle('hide', !isMatrix);
+      $('#schToggleView').textContent = isMatrix ? '切换教室看板' : '切换列表视图';
     });
+    $('#schMatrixCampus') && ($('#schMatrixCampus').onchange = renderScheduleMatrix);
+    $('#schMatrixDay') && ($('#schMatrixDay').onchange = renderScheduleMatrix);
     $('#flwAddQuickBtn') && ($('#flwAddQuickBtn').onclick = () => openAddFollowModal());
     $('#flwType') && ($('#flwType').onchange = renderFollowupPage);
     $('#flwKw') && ($('#flwKw').oninput = renderFollowupPage);
@@ -631,7 +676,7 @@
     fillStuFilters(); fillSchFilters();
     const stuData = $('#stuData'); if (stuData) stuData.innerHTML = st.ROSTER.map(a => `<option value="${esc(a.id)}">${esc(a.姓名)}（${esc(a.年级 || '')} · ${esc(a.电话 || '')}）</option>`).join('');
     const classData = $('#classData'); if (classData) classData.innerHTML = [...new Set(st.ENROLL.map(x => x.班级).concat(st.SCHEDULE.map(x => x.班级 || x.课程)))].filter(Boolean).sort().map(c => `<option value="${esc(c)}">`).join('');
-    renderHome(); renderStudents(); renderSchedule(); renderLeavePage(); renderOutlines(); renderOpLog(); loadFollowups();
+    renderHome(); renderStudents(); renderSchedule(); renderLeavePage(); renderOutlines(); fillMatrixFilters(); renderScheduleMatrix(); loadFollowups();
   }
   function onPage(id) {
     if (id === 'leave') loadLeaves();
