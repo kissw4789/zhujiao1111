@@ -211,7 +211,7 @@ function normalizeTeacher(v) {
 function normalizeSubject(v, cls = '') {
   const s = String(v || '') + String(cls || '');
   if (s.includes('物理')) return '物理';
-  if (s.includes('数学') || s.includes('奥数') || s.includes('中考') || s.includes('自招') || s.includes('创新') || s.includes('尖子') || s.includes('小明')) return '数学';
+  if (s.includes('数学') || s.includes('奥数') || s.includes('奥综') || s.includes('小奥') || s.includes('中考') || s.includes('自招') || s.includes('创新') || s.includes('尖子') || s.includes('小明')) return '数学';
   return v || '数学';
 }
 function classType(v) {
@@ -417,14 +417,40 @@ async function log(action, detail) {
 }
 async function handlePost(p, body, d) {
   if (p === '/api/leave/record') {
-    const item = { lid: stableId('L'), student_id: body.studentId || null, student_name: body.姓名 || '', class_name: body.班级 || '', leave_date: body.日期 || today(), reason: body.原因 || '', refund_amount: Number(body.折算金额 || 0), note: body.备注 || '', created_at_text: nowText(), raw: body };
+    if (!body.姓名 || !body.班级) return { ok: false, 错误: '学员姓名与班级必填' };
+    let sid = body.studentId;
+    if (!sid) {
+      const match = d.students.find(s => s.name === body.姓名 || (s.name && body.姓名 && s.name.trim() === body.姓名.trim()));
+      if (!match) return { ok: false, 错误: '系统学员名单中不存在此学员，请确认姓名' };
+      sid = match.id;
+    }
+    const item = { lid: stableId('L'), student_id: sid || null, student_name: body.姓名 || '', class_name: body.班级 || '', leave_date: body.日期 || today(), reason: body.原因 || '', refund_amount: Number(body.折算金额 || 0), note: body.备注 || '', created_at_text: nowText(), raw: body };
     await upsert('leaves', item, 'lid');
-    await log('登记请假', { 对象: body.姓名 || body.studentId || '', 班级: body.班级 || '', 变更: body.日期 || '' });
+    await log('登记请假', { 对象: body.姓名 || sid || '', 班级: body.班级 || '', 变更: body.日期 || '' });
     return { ok: true, item };
   }
   if (p === '/api/leave/delete') {
     await patch('leaves', `lid=eq.${q(body.lid || '')}`, { raw: { deleted: true, deletedAt: nowText() } });
     return { ok: true };
+  }
+  if (p === '/api/followup/record') {
+    const sid = body.studentId;
+    if (!sid) return { ok: false, 错误: '缺少学员ID' };
+    const fid = stableId('FLW');
+    const row = {
+      id: fid,
+      student_id: sid,
+      kind: body.type || '日常沟通',
+      status: body.type || '日常沟通',
+      subject: body.subject || '全科',
+      note: body.content || body.note || '',
+      created_at: new Date().toISOString(),
+      creator: body.creator || '助教',
+      raw: body
+    };
+    await upsert('followups', row, 'id');
+    await log('日常跟进', { 对象: body.studentName || sid, 变更: `${body.type || '日常沟通'}: ${(body.content || '').slice(0, 30)}` });
+    return { ok: true, item: row };
   }
   if (p === '/api/renew/followup' || p === '/api/expansion/followup') {
     const kind = p.includes('renew') ? 'renew' : 'expansion';
@@ -512,8 +538,24 @@ module.exports = async (req, res) => {
     if (p === '/api/students') return send(res, 200, rosterView(d, now));
     if (p === '/api/enrollments') return send(res, 200, d.enrollments.map(e => cnEnrollment(e, enrStatus(e, now))));
     if (p === '/api/families') return send(res, 200, d.families.map(f => cnFamily(f, d.students.filter(s => s.family_id === f.family_id))));
-    if (p === '/api/classes' || p === '/api/schedule') return send(res, 200, classRows(d));
+    if (p === '/api/classes' || p === '/api/schedule') return send(res, 200, classRows(d).filter(r => r.来源 !== '教室租用' && String(r.教室 || '').trim() !== '1号' && !String(r.课程 || '').includes('租用')));
     if (p === '/api/outlines') return send(res, 200, (d.outlines.find(x => x.id === 'main') || {}).payload || {});
+    if (p === '/api/followup/list') {
+      const sid = u.query.studentId;
+      let list = d.followups || [];
+      if (sid) list = list.filter(f => f.student_id === sid);
+      return send(res, 200, { ok: true, list: list.map(f => ({
+        id: f.id,
+        studentId: f.student_id,
+        studentName: (d.studentsById[f.student_id] || {}).name || f.raw?.studentName || '',
+        phone: (d.studentsById[f.student_id] || {}).phone || '',
+        type: f.kind || f.status || '日常沟通',
+        subject: f.subject || f.raw?.subject || '全科',
+        content: f.note || '',
+        createdAt: f.created_at || (f.raw && f.raw.created_at) || '',
+        creator: f.creator || (f.raw && f.raw.creator) || '助教'
+      })) });
+    }
     if (p === '/api/state') return send(res, 200, { leaves: d.leaves, opLog: d.oplog, expansion: d.followups.filter(f => f.kind === 'expansion'), renewFollowup: d.followups.filter(f => f.kind === 'renew') });
     if (p === '/api/oplog') return send(res, 200, d.oplog.map(l => ({ 时间: l.logged_at, 动作: l.action, 对象: l.target, 班级: l.class_name, 变更: l.change, ...(l.detail || {}) })));
     if (p === '/api/leave/list') return send(res, 200, { ok: true, leaves: d.leaves.filter(x => !(x.raw && x.raw.deleted)).map(x => ({ lid: x.lid, studentId: x.student_id, 姓名: x.student_name, 班级: x.class_name, 日期: x.leave_date, 原因: x.reason, 折算金额: x.refund_amount, 备注: x.note, 创建时间: x.created_at_text || x.created_at })) });
