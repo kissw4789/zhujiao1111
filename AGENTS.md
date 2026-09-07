@@ -32,16 +32,16 @@
 
 ## 二、 业务模型与数据字典对照
 
-云端当前包含 309 名学员档案、327 条报名记录、46 门班级、48 项排课矩阵与 701 条订单，数据表设计如下：
+云端当前包含 321 名学员档案（在读275/已结课40/待开课6）、281 户家庭、672 条报名记录（2026秋在读657/待开课15，在班587人次/去重272人）、92 行班级（前端看板口径46门在班班级）、94 项排课矩阵与 770 行/597 单订单（已支付678/已取消92，系统订单定位为2026暑+2026秋近期缴费口径，更早全量历史底账见本地Excel），数据表设计如下：
 
 | 表名 | 作用说明 | 关键主键/关联键 |
 | :--- | :--- | :--- |
 | `students` | 学员核心主档（一人一档） | `id` (主键), `family_id`, `name`, `phone`, `grade` |
 | `families` | 家庭关系表（解决二胎共用电话） | `family_id` (主键), `phone`, `source_name` |
-| `classes` | 秋季 46 门班级表 | `id` (主键), `class_name`, `teacher`, `campus`, `term` |
-| `enrollments` | 学员报读流水记录 | `eid` (主键), `student_id`, `class_name`, `term`, `is_void` |
-| `schedule_items` | 教室与时空排课矩阵（48项） | `schedule_id` (主键), `room`, `weekday`, `time_range`, `teacher` |
-| `orders` | 历史学费支付订单 | `id` (主键), `order_no`, `amount`, `payment_status` |
+| `classes` | 秋季班级表（92行，看板口径46门在班） | `id` (主键), `class_name`, `teacher`, `campus`, `term` |
+| `enrollments` | 学员报读流水记录（672条） | `eid` (主键), `student_id`, `class_name`, `term`, `is_void` |
+| `schedule_items` | 教室与时空排课矩阵（94项） | `schedule_id` (主键), `room`, `weekday`, `time_range`, `teacher` |
+| `orders` | 学费支付订单（770行/597单，暑秋近期口径） | `id` (主键), `order_no`, `amount`, `payment_status` |
 | `leaves` | 在线请假与退费消课台账 | `lid` (主键), `student_id`, `class_name`, `refund_amount` |
 | `followups` | 助教学情跟进/续班/拓科记录 | `id` (UUID), `student_id`, `kind`, `status`, `note` |
 | `op_logs` | 助教操作审计日志 | `id` (自增), `action`, `target`, `logged_at` |

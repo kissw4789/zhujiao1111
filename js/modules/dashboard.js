@@ -25,12 +25,15 @@
     const tag = $('#homeTermTag'); if (tag) tag.textContent = `${termDispL(cur)} 数据云端同步`;
     const stats = $('#homeStats');
     if (stats) stats.innerHTML = [
-      [`${termDispL(cur)}在读/待开课`, s.当期在读 || 0, '人'],
+      [`${termDispL(cur)}在读人次`, s.当期在读 || 0, '人次'],
+      [`${termDispL(cur)}去重学生`, s.去重学生 || 0, '人'],
       [`${termDispL(cur)}班级数`, s.当期班级 || 0, '个'],
-      ['学员档案总数', st.ROSTER.length, '人'],
-      ['报名记录', st.ENROLL.length, '条'],
-      ['课表记录', st.SCHEDULE.length, '项'],
+      ['当前课表', st.SCHEDULE.length, '项'],
     ].map(x => `<div class="kpi-card"><div class="kpi-k">${x[0]}</div><div class="kpi-v">${x[1]}<span>${x[2]}</span></div></div>`).join('');
+
+    const todoBox = $('#homeTodo');
+    const todo = (h.今日待办 || []).length ? h.今日待办 : (st.LEAVES.length ? [{ type: '请假后续', count: st.LEAVES.length, text: `当前有 ${st.LEAVES.length} 条请假/退费待跟进` }] : []);
+    if (todoBox) todoBox.innerHTML = todo.length ? todo.map(t => `<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid #FDE68A;background:#FFFBEB;border-radius:8px;margin-bottom:8px;"><span class="badge gold">${esc(t.type || '待办')}</span><span style="font-size:13px;color:#1E293B;">${esc(t.text || '')}</span></div>`).join('') : '<div class="note ok">今日待办已全部处理</div>';
     
     // 今日排课：过滤 1 号教室与租用，按时间先后升序排序
     let td = (h.今日排课 || []).filter(r => String(r.教室 || '').trim() !== '1号' && !String(r.课程 || '').includes('租用') && r.来源 !== '教室租用');
@@ -64,12 +67,25 @@
   function stuRows() {
     const term = ($('#stuTerm') || {}).value || '2026秋', campus = ($('#stuCampus') || {}).value || '';
     const kw = st.filters.stuKw.trim().toLowerCase();
-    let rows = st.ROSTER.map(a => { const es = st.ENR_BY_ID[a.id] || []; return { st: a, es }; });
-    if (term !== 'all') rows = rows.filter(a => a.es.some(e => e.期 === term));
-    if (campus) rows = rows.filter(a => a.es.some(e => e.校区 === campus && (term === 'all' || e.期 === term)));
-    if (kw) rows = rows.filter(a => (a.st.姓名 || '').toLowerCase().includes(kw) || (a.st.电话 || '').includes(kw) || a.es.some(e => (e.班级 || '').toLowerCase().includes(kw)));
+    // 以“报名行”为维度过滤：筛选条件作用于单条报名记录，而不是学员名下全部班级
+    let rows = [];
+    st.ROSTER.forEach(a => {
+      const es = (st.ENR_BY_ID[a.id] || []).filter(e => {
+        if (term !== 'all' && e.期 !== term) return false;
+        if (campus && e.校区 !== campus) return false;
+        if (term !== 'all' && e.在册 === false) return false;
+        return true;
+      });
+      es.forEach(e => rows.push({ st: a, es: [e], enroll: e }));
+      if (term === 'all' && !es.length) rows.push({ st: a, es: [], enroll: null });
+    });
+    if (kw) rows = rows.filter(a => (a.st.姓名 || '').toLowerCase().includes(kw) || (a.st.电话 || '').includes(kw) || (a.enroll && (a.enroll.班级 || '').toLowerCase().includes(kw)));
     if (st.filters.stuSort === 'name') rows.sort((a, b) => (a.st.姓名 || '').localeCompare(b.st.姓名 || '', 'zh'));
-    else rows.sort((a, b) => st.filters.stuSort === 'dateAsc' ? (a.st.最近 || '').localeCompare(b.st.最近 || '') : (b.st.最近 || '').localeCompare(a.st.最近 || ''));
+    else rows.sort((a, b) => {
+      const da = (a.enroll && (a.enroll.开课 || a.enroll.期)) || a.st.最近 || '';
+      const db = (b.enroll && (b.enroll.开课 || b.enroll.期)) || b.st.最近 || '';
+      return st.filters.stuSort === 'dateAsc' ? String(da).localeCompare(String(db)) : String(db).localeCompare(String(da));
+    });
     return { rows, term };
   }
   function pickClsRows(es, term, person) {
@@ -189,8 +205,7 @@
     const roomMap = {};
     items.forEach(r => { const rm = r.教室 || '未知'; (roomMap[rm] = roomMap[rm] || []).push(r); });
     Object.values(roomMap).forEach(arr => arr.sort((a,b) => String(a.时间||'').localeCompare(String(b.时间||''))));
-    const skipRooms = ['办公室','学霸休息室'];
-    const allRooms = [...new Set(st.SCHEDULE.filter(r => r.校区 === campus && String(r.教室||'').trim() !== '1号' && !skipRooms.includes(String(r.教室||'').trim()) && !String(r.课程||'').includes('租用') && r.来源 !== '教室租用').map(r => r.教室))].filter(Boolean);
+    const allRooms = [...new Set(st.SCHEDULE.filter(r => r.校区 === campus && String(r.教室||'').trim() !== '1号' && !String(r.课程||'').includes('租用') && r.来源 !== '教室租用').map(r => r.教室))].filter(Boolean);
     const roomOrd = n => { const m = String(n).match(/^(\d+)号$/); return m ? [0, Number(m[1])] : [1, n]; };
     allRooms.sort((a,b) => { const [ta,na]=roomOrd(a),[tb,nb]=roomOrd(b); if(ta!==tb) return ta-tb; return typeof na==='number'? na-nb : String(na).localeCompare(String(nb),'zh'); });
     const labels = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
@@ -371,9 +386,9 @@
         `)}
         ${FG('关联科目', `
           <select id="af-subject">
-            <option>全科综合</option>
             <option>数学</option>
             <option>物理</option>
+            <option>全科综合</option>
           </select>
         `)}
       </div>

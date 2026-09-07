@@ -2,3 +2,13 @@ node_modules
 .DS_Store
 *.log
 .vercel
+
+# 本地留档与审计产物（含敏感学员数据，禁止入库）
+_archive/
+tools/_*
+
+# data 目录：仅保留可公开文档；学员数据快照与反馈核对产物禁止入库
+data/*.json
+data/2026秋*
+data/缺漏*
+data/raw_*

@@ -173,16 +173,18 @@ function cnEnrollment(e, status) {
     班级: e.class_name || '',
     班级名称: e.class_display_name || e.class_name || '',
     年级: e.grade || '',
-    学科: e.subject || '',
+    学科: inferSubject(e.subject, e.class_name),
     学期: e.term_name || e.term || '',
     期: e.term || TERM,
     校区: e.campus || '',
     老师: e.teacher || '',
-    时间: e.time_range || '',
+    时间: displayTime(e.weekday || '', e.time_range || '', e.start_date || ''),
+    原始时间: e.time_range || '',
     讲次时间: e.lecture_times || '',
     开课: e.start_date || '',
     结课: e.end_date || '',
     源状态: e.source_status || '',
+    在册: activeEnrollment(e),
     分配状态: e.assignment_status || '',
     状态: status || e.display_status || '',
     已报预招: e.capacity_text || '',
@@ -208,6 +210,7 @@ function cnOrder(o) {
     姓名: o.student_name || '',
     电话: o.phone || '',
     状态: o.payment_status || '',
+    有效订单: validRecentOrder(o),
     familyId: o.family_id || '',
     sourceStudentId: o.source_student_id || '',
     childId: o.child_id || '',
@@ -261,6 +264,50 @@ function termOf(dateStr) {
 function stableId(prefix) {
   return `${prefix}-${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`;
 }
+function activeEnrollment(e) {
+  return !!e.student_id && e.term === TERM && !e.is_void && e.active_in_latest !== false && e.source_status !== '历史在班学生';
+}
+function validRecentOrder(o) {
+  if (o.payment_status !== '已支付') return false;
+  const text = [o.term, o.product, o.ordered_at, o.paid_at].map(x => String(x || '')).join(' ');
+  return text.includes('2026秋') || text.includes('2026 秋') || text.includes('秋季') || text.includes('2026暑') || text.includes('2026 暑') || text.includes('暑期') || text.includes('暑假');
+}
+function orderBelongsToStudent(o, st) {
+  const sid = st.id;
+  const sourceId = st.source_student_id || st.id;
+  return o.child_id === sid || o.source_student_id === sourceId || (o.phone && st.phone && o.phone === st.phone);
+}
+function displayTime(weekday, timeRange, startDate) {
+  const parts = [];
+  if (startDate) parts.push(startDate);
+  if (weekday) parts.push(weekday);
+  if (timeRange) parts.push(timeRange);
+  return parts.join(' ') || '';
+}
+function classKey(v) {
+  return String(v || '').trim().replace(/\s+/g, '').replace(/：/g, ':');
+}
+function followupType(v) {
+  const s = String(v || '').trim();
+  const map = {
+    expansion: '拓科跟进',
+    retention: '续班沟通',
+    daily: '日常沟通',
+    parent: '家长沟通',
+    class: '课堂表现',
+    homework: '作业反馈',
+    question: '错题答疑',
+    leave: '请假补课',
+    stage: '阶段学情',
+    first_lesson: '首课反馈',
+  };
+  return map[s] || s || '日常沟通';
+}
+function inferSubject(value, className = '') {
+  const s = String(value || '').trim();
+  if (s && s !== '全科' && s !== '全科综合') return normalizeSubject(s, className);
+  return normalizeSubject('', className);
+}
 async function getData() {
   const [students, families, enrollments, orders, schedule, outlines, followups, leaves] = await Promise.all([
     select('students', 'select=*&order=name.asc'),
@@ -286,8 +333,8 @@ function rosterView(d, now) {
     return {
       ...cnStudent(st),
       状态: studentStatus(es, now),
-      当期: es.filter(e => !e.is_void && enrStatus(e, now) !== '已结课').map(e => ({ 班级: e.class_name, 老师: e.teacher, 期: e.term, 状态: enrStatus(e, now), 校区: e.campus })),
-      累计缴费: Math.round(d.orders.filter(o => o.child_id === st.id && o.payment_status === '已支付').reduce((s, o) => s + Number(o.amount || 0), 0)),
+      当期: es.filter(activeEnrollment).map(e => ({ 班级: e.class_name, 老师: e.teacher, 期: e.term, 状态: enrStatus(e, now), 校区: e.campus, 学科: inferSubject(e.subject, e.class_name), 时间: displayTime(e.weekday || '', e.time_range || '', e.start_date || ''), 开课: e.start_date || '' })),
+      累计缴费: Math.round(d.orders.filter(o => orderBelongsToStudent(o, st) && validRecentOrder(o)).reduce((s, o) => s + Number(o.amount || 0), 0)),
       家庭: fam ? cnFamily(fam, kids) : null,
       同家庭人数: kids.length || 1,
     };
@@ -297,26 +344,39 @@ function classRows(d) {
   const map = {};
   d.enrollments.forEach(e => {
     if (e.is_void || !e.class_name) return;
-    const c = map[e.class_name] = map[e.class_name] || { 期: e.term, 学期: e.term_name, 班级: e.class_name, 学科: e.subject || normalizeSubject('', e.class_name), 老师: e.teacher, 校区: e.campus, 开课: e.start_date, 结课: e.end_date, 在班: [], 退出: [], 待确认: [] };
+    const key = classKey(e.class_name);
+    const c = map[key] = map[key] || { 期: e.term, 学期: e.term_name, 班级: e.class_name, 学科: inferSubject(e.subject, e.class_name), 老师: e.teacher, 校区: e.campus, 开课: e.start_date, 结课: e.end_date, 在班: [], 退出: [], 待确认: [] };
     if (!e.student_id) {
       c.待确认.push({ eid: e.eid, 原始姓名: e.student_name, 候选年级: e.grade, familyId: e.family_id, 电话: e.phone });
       return;
     }
     const st = d.studentsById[e.student_id];
     if (!st) return;
-    const item = { id: st.id, 姓名: st.name, 年级: st.grade, 电话: st.phone, familyId: st.family_id, 源状态: e.source_status };
-    if (e.source_status === '历史在班学生' || !e.active_in_latest) c.退出.push(item);
+    const item = { id: st.id, 姓名: st.name, 年级: st.grade, 电话: st.phone, familyId: st.family_id, 源状态: e.source_status, eid: e.eid };
+    if (!activeEnrollment(e)) c.退出.push(item);
     else if (!c.在班.some(x => x.id === item.id)) c.在班.push(item);
   });
-  return d.schedule.map(r => {
+  const scheduleByClass = new Map();
+  d.schedule.forEach(r => {
     const cls = r.class_name || r.course || '';
-    const c = map[cls] || {};
+    const key = classKey(cls);
+    if (!key) return;
+    const old = scheduleByClass.get(key);
+    if (!old || (r.active_in_latest && !old.active_in_latest) || (String(r.start_date || '').localeCompare(String(old.start_date || '')) >= 0)) scheduleByClass.set(key, r);
+  });
+  return Array.from(scheduleByClass.values()).map(r => {
+    const cls = r.class_name || r.course || '';
+    const c = map[classKey(cls)] || {};
     const inClass = c.在班 || [];
+    const weekday = r.weekday || '';
+    const timeRange = r.time_range || '';
+    const startDate = r.start_date || c.开课 || '2026-09-05';
     return {
       来源: String(r.course || '').includes('教室租用') || r.source === '教室租用' ? '教室租用' : '课表',
       班号: r.class_no || r.schedule_id,
-      星期: r.weekday || '',
-      时间: r.time_range || '',
+      星期: weekday,
+      时间: displayTime(weekday, timeRange, startDate),
+      原始时间: timeRange,
       教室: r.room || '',
       课程: r.course || cls,
       班级: cls,
@@ -328,31 +388,38 @@ function classRows(d) {
       备注: (r.raw && r.raw.备注) || '',
       年级: r.grade || gradeOfClass(cls),
       班型: r.class_type || classType(cls),
-      学科: r.subject || normalizeSubject('', cls),
+      学科: inferSubject(r.subject, cls),
       人数: inClass.length || Number(r.enrolled_count) || 0,
       在班人数: inClass.length || Number(r.enrolled_count) || 0,
       在班: inClass,
       enrolledList: inClass,
       退出: c.退出 || [],
       待确认: c.待确认 || [],
-      开课: r.start_date || c.开课 || '2026-09-05',
+      开课: startDate,
       结课: r.end_date || c.结课 || '2027-01-17',
     };
   });
 }
 function homeData(d, now) {
   const cur = TERM;
-  const active = d.enrollments.filter(e => !e.is_void && e.student_id && e.term === cur && enrStatus(e, now) !== '已结课' && e.source_status !== '历史在班学生');
+  const active = d.enrollments.filter(activeEnrollment);
   const kids = new Set(active.map(e => e.student_id));
   const classes = new Set(active.map(e => e.class_name));
   const weekDayNames = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
   const weekday = weekDayNames[new Date().getDay()];
+  const todayClasses = classRows(d).filter(s => s.星期 === weekday);
+  const todo = [];
+  const followups = mapFollowups(d);
+  const leaves = mapLeaves(d);
+  if (leaves.length) todo.push({ type: '请假后续', count: leaves.length, text: `当前有 ${leaves.length} 条请假/退费待跟进` });
+  if (followups.length) todo.push({ type: '学情跟进', count: followups.length, text: `当前有 ${followups.length} 条学情跟进记录` });
   return {
     今天: now,
     星期: weekday,
     当期: cur,
-    看板: { 当期在读: kids.size, 当期班级: classes.size },
-    今日排课: classRows(d).filter(s => s.星期 === weekday),
+    看板: { 当期在读: active.length, 当期班级: classes.size, 去重学生: kids.size },
+    今日排课: todayClasses,
+    今日待办: todo,
   };
 }
 function mapLeaves(d) {
@@ -364,8 +431,8 @@ function mapFollowups(d) {
     studentId: f.student_id,
     studentName: (d.studentsById[f.student_id] || {}).name || (f.raw && f.raw.studentName) || '',
     phone: (d.studentsById[f.student_id] || {}).phone || '',
-    type: f.kind || f.status || '日常沟通',
-    subject: f.subject || (f.raw && f.raw.subject) || '全科',
+    type: followupType(f.kind || f.status || '日常沟通'),
+    subject: inferSubject(f.subject || (f.raw && f.raw.subject) || '全科', (d.studentsById[f.student_id] || {}).name || ''),
     content: f.note || '',
     createdAt: f.created_at || (f.raw && f.raw.created_at) || '',
     creator: f.creator || (f.raw && f.raw.creator) || '助教'
@@ -381,6 +448,7 @@ function bootstrapData(d, now) {
     outlines: (d.outlines.find(x => x.id === 'main') || {}).payload || {},
     leaves: mapLeaves(d),
     followups: mapFollowups(d),
+    todos: homeData(d, now).今日待办 || [],
   };
 }
 async function log(action, detail) {
@@ -515,10 +583,11 @@ module.exports = async (req, res) => {
       const st = d.studentsById[u.query.id];
       if (!st) return send(res, 404, { ok: false, 错误: '没有这个学员' });
       const es = (d.enrsByStudent[st.id] || []).map(e => cnEnrollment(e, enrStatus(e, now)));
-      const orders = d.orders.filter(o => o.child_id === st.id).map(cnOrder);
+      const orders = d.orders.filter(o => orderBelongsToStudent(o, st)).map(cnOrder);
       const fam = d.familiesById[st.family_id];
       const kids = d.students.filter(s => s.family_id === st.family_id && s.id !== st.id).map(cnStudent);
-      return send(res, 200, { 基本: { ...cnStudent(st), 状态: studentStatus(d.enrsByStudent[st.id] || [], now) }, 报名: es, 订单: orders, 累计缴费: Math.round(orders.filter(o => o.状态 === '已支付').reduce((a, b) => a + Number(b.金额 || 0), 0)), 家庭: fam ? cnFamily(fam, d.students.filter(s => s.family_id === fam.family_id)) : null, 同家庭: kids });
+      const validOrders = orders.filter(o => o.有效订单);
+      return send(res, 200, { 基本: { ...cnStudent(st), 状态: studentStatus(d.enrsByStudent[st.id] || [], now) }, 报名: es, 订单: orders, 有效订单: validOrders, 累计缴费: Math.round(validOrders.reduce((a, b) => a + Number(b.金额 || 0), 0)), 家庭: fam ? cnFamily(fam, d.students.filter(s => s.family_id === fam.family_id)) : null, 同家庭: kids });
     }
     if (p === '/api/family') {
       const fam = d.familiesById[u.query.id];
