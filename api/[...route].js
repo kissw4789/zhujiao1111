@@ -507,36 +507,6 @@ async function log(action, detail) {
   await upsert('op_logs', { source_hash: crypto.randomBytes(10).toString('hex'), logged_at: nowText(), action, target: detail && detail.对象 || '', class_name: detail && detail.班级 || '', change: detail && detail.变更 || '', detail: detail || {} }, 'source_hash');
 }
 async function handlePost(p, body, d) {
-  // ===== 【临时运维端点·2026-09-08】双人名档案归一化（老板人工核对后执行，用完即删）=====
-  // body.actions: [{mergedId, keepName, absorbIds:[保留方单人历史档id]}]
-  if (p === '/api/admin/resolve_merged') {
-    const acts = Array.isArray(body.actions) ? body.actions : [];
-    if (!acts.length) return { ok: false, 错误: 'actions 为空' };
-    const results = [];
-    for (const a of acts) {
-      const m = d.students.find(s => s.id === a.mergedId);
-      if (!m) { results.push({ mergedId: a.mergedId, ok: false, 错误: '未找到合并档' }); continue; }
-      const oldName = m.name;
-      // 1) 合并档改名为保留单人名
-      await patch('students', `id=eq.${encodeURIComponent(a.mergedId)}`, { name: a.keepName });
-      // 2) 保留方单人历史档的历史数据并入在读档后删除单人档（一人一档）
-      for (const aid of (a.absorbIds || [])) {
-        await patch('enrollments', `student_id=eq.${encodeURIComponent(aid)}`, { student_id: a.mergedId, student_name: a.keepName });
-        await patch('orders', `child_id=eq.${encodeURIComponent(aid)}`, { child_id: a.mergedId, student_name: a.keepName });
-        await patch('followups', `student_id=eq.${encodeURIComponent(aid)}`, { student_id: a.mergedId });
-        await sb(`students?id=eq.${encodeURIComponent(aid)}`, { method: 'DELETE' });
-      }
-      // 3) 姓名同步：在读档名下的报名/反馈/订单冗余姓名统一为保留名
-      await patch('enrollments', `student_id=eq.${encodeURIComponent(a.mergedId)}`, { student_name: a.keepName });
-      await patch('lesson_feedbacks', `student_id=eq.${encodeURIComponent(a.mergedId)}`, { student_name: a.keepName });
-      await patch('orders', `child_id=eq.${encodeURIComponent(a.mergedId)}`, { student_name: a.keepName });
-      // 兜底：反馈库按旧合并名也扫一遍（student_id 可能挂的单人id）
-      await patch('lesson_feedbacks', `student_name=eq.${encodeURIComponent(oldName)}`, { student_name: a.keepName });
-      await log('双人名档案归一', { 对象: `${oldName}→${a.keepName}`, 变更: `吸收历史档${(a.absorbIds || []).length}个` });
-      results.push({ mergedId: a.mergedId, ok: true, from: oldName, to: a.keepName, absorbed: (a.absorbIds || []).length });
-    }
-    return { ok: true, results };
-  }
   if (p === '/api/todo/record') {
     // 1) enrollments：同(学生,班级)重复组中删除 -CLS- 型重复行（保留原始导入行）
     const g = {};
