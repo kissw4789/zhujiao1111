@@ -280,6 +280,55 @@ create table if not exists op_logs (
 
 create index if not exists op_logs_logged_at_idx on op_logs(logged_at);
 
+-- ============ 2026-09-08 新增：讲次学情反馈库 + 助教待办 ============
+-- 讲次学情反馈：老师每讲给出的正式学员反馈（原汁原味正文），与学员档案关联
+create table if not exists lesson_feedbacks (
+  fid text primary key,                -- 例：FB-2026秋-L1-12535964
+  term text not null default '2026秋',
+  lesson text not null,                -- 例：第1讲
+  lesson_title text,                   -- 例：圆柱与圆锥初步
+  lesson_date text,                    -- 上课日期
+  student_id text,
+  student_name text,
+  class_name text,
+  teacher text,
+  grade text,
+  subject text,
+  campus text,
+  phone text,
+  status text,                         -- 已出反馈/小明班免发/周三未开课/请假缺课/免发未到课/试听刚报未上
+  content text,                        -- 反馈正文（原汁原味，不删改）
+  note text,
+  raw jsonb not null default '{}'::jsonb,
+  updated_at timestamptz not null default now(),
+  created_at timestamptz not null default now()
+);
+create index if not exists lesson_feedbacks_sid_idx on lesson_feedbacks(student_id, term, lesson);
+create index if not exists lesson_feedbacks_class_idx on lesson_feedbacks(class_name);
+
+-- 助教个人待办：临时接到、当下无法立即完成的动作（请假/调课/退费/跟进等）
+create table if not exists todos (
+  tid text primary key,                -- 例：T-xxx
+  title text not null,                 -- 一句话待办，例：给张三登记9/10请假
+  kind text not null default '其他',   -- 请假/调课/退费/跟进/反馈催收/其他
+  student_id text,
+  student_name text,
+  class_name text,
+  note text,
+  due_date text,                       -- 截止/应办日期 YYYY-MM-DD
+  remind_at text,                      -- 提醒时刻 HH:MM（当天下班前提醒）
+  status text not null default '待办', -- 待办/已完成/已取消
+  done_text text,                      -- 完成时补记（例：已登记请假并折算）
+  link_leave_lid text,                 -- 联动生成的请假单 lid（若有）
+  creator text default '助教',
+  done_at_text text,
+  raw jsonb not null default '{}'::jsonb,
+  created_at_text text,
+  updated_at timestamptz not null default now(),
+  created_at timestamptz not null default now()
+);
+create index if not exists todos_status_due_idx on todos(status, due_date);
+
 alter table import_batches enable row level security;
 alter table raw_roster_rows enable row level security;
 alter table families enable row level security;
@@ -294,3 +343,5 @@ alter table leaves enable row level security;
 alter table class_progress enable row level security;
 alter table family_assignment_rules enable row level security;
 alter table op_logs enable row level security;
+alter table lesson_feedbacks enable row level security;
+alter table todos enable row level security;

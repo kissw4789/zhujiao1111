@@ -309,7 +309,7 @@ function inferSubject(value, className = '') {
   return normalizeSubject('', className);
 }
 async function getData() {
-  const [students, families, enrollments, orders, schedule, outlines, followups, leaves] = await Promise.all([
+  const [students, families, enrollments, orders, schedule, outlines, followups, leaves, todos, feedbacks] = await Promise.all([
     select('students', 'select=*&order=name.asc'),
     select('families', 'select=*'),
     select('enrollments', 'select=*&order=start_date.desc'),
@@ -318,12 +318,15 @@ async function getData() {
     select('course_outlines', 'select=*'),
     select('followups', 'select=*'),
     select('leaves', 'select=*'),
+    // 2026-09-08 新增两张表；若建表SQL尚未执行则降级为空，系统其余功能不受影响
+    select('todos', 'select=*&order=created_at.desc').catch(() => []),
+    select('lesson_feedbacks', 'select=fid,term,lesson,lesson_title,lesson_date,student_id,student_name,class_name,teacher,subject,campus,status&order=class_name.asc').catch(() => []),
   ]);
   const studentsById = Object.fromEntries(students.map(s => [s.id, s]));
   const familiesById = Object.fromEntries(families.map(f => [f.family_id, f]));
   const enrsByStudent = {};
   enrollments.forEach(e => { if (e.student_id) (enrsByStudent[e.student_id] = enrsByStudent[e.student_id] || []).push(e); });
-  return { students, families, enrollments, orders, schedule, outlines, followups, leaves, studentsById, familiesById, enrsByStudent };
+  return { students, families, enrollments, orders, schedule, outlines, followups, leaves, todos, feedbacks, studentsById, familiesById, enrsByStudent };
 }
 function rosterView(d, now) {
   return d.students.map(st => {
@@ -438,6 +441,36 @@ function mapFollowups(d) {
     creator: f.creator || (f.raw && f.raw.creator) || '助教'
   }));
 }
+// ===== 2026-09-08 助教个人待办 =====
+function mapTodos(d) {
+  return (d.todos || []).map(t => ({
+    tid: t.tid,
+    标题: t.title || '',
+    类型: t.kind || '其他',
+    studentId: t.student_id || '',
+    姓名: t.student_name || '',
+    班级: t.class_name || '',
+    备注: t.note || '',
+    截止: t.due_date || '',
+    提醒: t.remind_at || '',
+    状态: t.status || '待办',
+    完成补记: t.done_text || '',
+    联动请假单: t.link_leave_lid || '',
+    创建: t.created_at_text || t.created_at || '',
+    完成时间: t.done_at_text || '',
+  }));
+}
+function feedbackMeta(d) {
+  const byLesson = {};
+  (d.feedbacks || []).forEach(f => {
+    const L = f.lesson || '第1讲';
+    const o = byLesson[L] = byLesson[L] || { lesson: L, lessonTitle: f.lesson_title || '', total: 0, byStatus: {}, classes: {} };
+    o.total++;
+    o.byStatus[f.status || '未标记'] = (o.byStatus[f.status || '未标记'] || 0) + 1;
+    if (f.class_name) o.classes[f.class_name] = (o.classes[f.class_name] || 0) + 1;
+  });
+  return Object.values(byLesson);
+}
 function bootstrapData(d, now) {
   return {
     home: homeData(d, now),
@@ -448,6 +481,8 @@ function bootstrapData(d, now) {
     outlines: (d.outlines.find(x => x.id === 'main') || {}).payload || {},
     leaves: mapLeaves(d),
     followups: mapFollowups(d),
+    todoList: mapTodos(d),
+    feedbackMeta: feedbackMeta(d),
     todos: homeData(d, now).今日待办 || [],
   };
 }
@@ -455,6 +490,84 @@ async function log(action, detail) {
   await upsert('op_logs', { source_hash: crypto.randomBytes(10).toString('hex'), logged_at: nowText(), action, target: detail && detail.对象 || '', class_name: detail && detail.班级 || '', change: detail && detail.变更 || '', detail: detail || {} }, 'source_hash');
 }
 async function handlePost(p, body, d) {
+  // ===== 2026-09-08 助教个人待办 =====
+  if (p === '/api/todo/record') {
+    if (!body.标题) return { ok: false, 错误: '待办标题必填' };
+    let sid = body.studentId || '';
+    if (!sid && body.姓名) {
+      const m = d.students.find(s => s.name && body.姓名 && s.name.trim() === body.姓名.trim());
+      if (m) sid = m.id;
+    }
+    const tid = stableId('T');
+    let linkLid = '';
+    // 联动登记请假：勾了"同时登记请假"就直接落 leaves，学员立即变请假状态
+    if (body.登记请假 && body.姓名 && body.班级) {
+      linkLid = stableId('L');
+      await upsert('leaves', { lid: linkLid, student_id: sid || null, student_name: body.姓名, class_name: body.班级, leave_date: body.日期 || today(), reason: body.原因 || body.备注 || '', refund_amount: Number(body.折算金额 || 0), note: '由待办联动登记', created_at_text: nowText(), raw: body }, 'lid');
+      await log('登记请假', { 对象: body.姓名, 班级: body.班级, 变更: body.日期 || today() });
+    }
+    const item = {
+      tid, title: body.标题, kind: body.类型 || '其他', student_id: sid || null, student_name: body.姓名 || '',
+      class_name: body.班级 || '', note: body.备注 || '', due_date: body.截止 || today(), remind_at: body.提醒 || '',
+      status: linkLid ? '已完成' : '待办', link_leave_lid: linkLid || null, done_text: linkLid ? '已联动登记请假' : '',
+      done_at_text: linkLid ? nowText() : '', creator: '助教', created_at_text: nowText(), raw: body,
+    };
+    await upsert('todos', item, 'tid');
+    await log('新增待办', { 对象: body.姓名 || body.标题, 班级: body.班级 || '', 变更: body.截止 || today() });
+    return { ok: true, item: { tid, 联动请假单: linkLid } };
+  }
+  if (p === '/api/todo/done') {
+    if (!body.tid) return { ok: false, 错误: '缺少tid' };
+    await patch('todos', `tid=eq.${encodeURIComponent(body.tid)}`, { status: '已完成', done_text: body.完成补记 || '', done_at_text: nowText(), updated_at: new Date().toISOString() });
+    await log('完成待办', { 对象: body.标题 || body.tid, 变更: body.完成补记 || '' });
+    return { ok: true };
+  }
+  if (p === '/api/todo/delete') {
+    if (!body.tid) return { ok: false, 错误: '缺少tid' };
+    await patch('todos', `tid=eq.${encodeURIComponent(body.tid)}`, { status: '已取消', updated_at: new Date().toISOString() });
+    await log('取消待办', { 对象: body.标题 || body.tid, 变更: '' });
+    return { ok: true };
+  }
+  // ===== 2026-09-08 讲次学情反馈 =====
+  if (p === '/api/feedback/record') {
+    if (!body.student_name && !body.student_id) return { ok: false, 错误: '学员必填' };
+    if (!body.content) return { ok: false, 错误: '反馈正文必填' };
+    let sid = body.student_id || '';
+    if (!sid && body.student_name) {
+      const m = d.students.find(s => s.name && body.student_name && s.name.trim() === body.student_name.trim());
+      if (m) sid = m.id;
+    }
+    const fid = body.fid || `FB-${body.term || TERM}-${body.lesson || '第1讲'}-${sid || stableId('X')}`;
+    const item = {
+      fid, term: body.term || TERM, lesson: body.lesson || '第1讲', lesson_title: body.lesson_title || '', lesson_date: body.lesson_date || '',
+      student_id: sid || null, student_name: body.student_name || '', class_name: body.class_name || '', teacher: body.teacher || '',
+      grade: body.grade || '', subject: body.subject || '', campus: body.campus || '', phone: body.phone || '',
+      status: body.status || '已出反馈', content: body.content || '', note: body.note || '手动录入', raw: body,
+    };
+    await upsert('lesson_feedbacks', item, 'fid');
+    await log('录入讲次反馈', { 对象: body.student_name || sid, 班级: body.class_name || '', 变更: body.lesson || '第1讲' });
+    return { ok: true, fid };
+  }
+  if (p === '/api/feedback/bulk') {
+    const rows = Array.isArray(body.rows) ? body.rows : [];
+    if (!rows.length) return { ok: false, 错误: 'rows为空' };
+    if (rows.length > 500) return { ok: false, 错误: '单次最多500条' };
+    const items = rows.map(r => ({
+      fid: r.fid || `FB-${r.term || TERM}-${r.lesson || '第1讲'}-${r.student_id || stableId('X')}`,
+      term: r.term || TERM, lesson: r.lesson || '第1讲', lesson_title: r.lesson_title || '', lesson_date: r.lesson_date || '',
+      student_id: r.student_id || null, student_name: r.student_name || '', class_name: r.class_name || '', teacher: r.teacher || '',
+      grade: r.grade || '', subject: r.subject || '', campus: r.campus || '', phone: r.phone || '',
+      status: r.status || '已出反馈', content: r.content || r.feedback_content || '', note: r.note || '', raw: r,
+    }));
+    // 分批upsert，避免单包过大
+    let ok = 0;
+    for (let i = 0; i < items.length; i += 50) {
+      await upsert('lesson_feedbacks', items.slice(i, i + 50), 'fid');
+      ok += Math.min(50, items.length - i);
+    }
+    await log('批量导入讲次反馈', { 对象: `${ok}条`, 变更: items[0] ? items[0].lesson : '' });
+    return { ok: true, upserted: ok };
+  }
   if (p === '/api/leave/record') {
     if (!body.姓名 || !body.班级) return { ok: false, 错误: '学员姓名与班级必填' };
     let sid = body.studentId;
@@ -561,6 +674,35 @@ module.exports = async (req, res) => {
       return send(res, 401, { ok: false, 错误: '密码不正确' });
     }
     if (p === '/api/auth/logout') { clearSessionCookie(req, res); return send(res, 200, { ok: true }); }
+    // ===== 2026-09-08 Vercel Cron 下班前待办提醒（微信推送通道：Server酱/企业微信机器人）=====
+    // 鉴权独立于会话：配置了 CRON_SECRET 则校验 Bearer 或 ?key=，否则要求已登录会话（便于手动测试）
+    if (p === '/api/cron/remind' && req.method === 'GET') {
+      const secret = process.env.CRON_SECRET || '';
+      const authedCron = secret && (req.headers.authorization === `Bearer ${secret}` || u.query.key === secret);
+      if (!authedCron && !isAuthed(req)) return send(res, 401, { ok: false, 错误: '未授权' });
+      const cd = await getData();
+      const nowD = today();
+      const pend = (cd.todos || []).filter(t => t.status === '待办' && (t.due_date || nowD) <= nowD);
+      if (!pend.length) return send(res, 200, { ok: true, pending: 0, pushed: false, msg: '无未办待办' });
+      const overdue = pend.filter(t => (t.due_date || '') < nowD);
+      const lines = pend.map(t => `- [${t.kind || '其他'}] ${t.title}${t.student_name ? `（${t.student_name}${t.class_name ? '/' + t.class_name : ''}）` : ''} · 截止 ${t.due_date}${(t.due_date || '') < nowD ? '【已逾期】' : ''}`);
+      const title = `助教待办提醒：${pend.length}条未办${overdue.length ? `（${overdue.length}条已逾期）` : ''}`;
+      const desp = `## 今日待办清单（${nowD}）\n\n${lines.join('\n')}\n\n> 打开助教工作台处理：https://zhujiao1111.vercel.app`;
+      let pushed = false, channel = '', pushMsg = '';
+      const sct = process.env.SCT_SENDKEY || '';
+      const hook = process.env.WECHAT_WEBHOOK || '';
+      try {
+        if (sct) {
+          const r = await fetch(`https://sctapi.ftqq.com/${sct}.send`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title, desp }) });
+          pushed = r.ok; channel = 'serverchan'; pushMsg = await r.text().catch(() => '');
+        } else if (hook) {
+          const r = await fetch(hook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ msgtype: 'markdown', markdown: { content: `**${title}**\n${lines.join('\n')}` } }) });
+          pushed = r.ok; channel = 'wecom'; pushMsg = await r.text().catch(() => '');
+        }
+      } catch (e) { pushMsg = String(e && e.message || e); }
+      await log('待办提醒推送', { 对象: `${pend.length}条未办`, 变更: pushed ? channel : '未配置推送通道' });
+      return send(res, 200, { ok: true, pending: pend.length, overdue: overdue.length, pushed, channel, lines, pushMsg: String(pushMsg).slice(0, 200) });
+    }
     if (!isAuthed(req)) return send(res, 401, { ok: false, 错误: '请先登录' });
 
     const d = await getData();
@@ -579,6 +721,16 @@ module.exports = async (req, res) => {
       return send(res, 200, { ok: true, list });
     }
     if (p === '/api/leave/list') return send(res, 200, { ok: true, leaves: mapLeaves(d) });
+    // ===== 2026-09-08 讲次学情反馈查询（含正文，按学员/班级/讲次过滤）=====
+    if (p === '/api/feedback/list') {
+      let rows = await select('lesson_feedbacks', 'select=*&order=class_name.asc').catch(() => null);
+      if (rows === null) return send(res, 200, { ok: true, list: [], msg: '反馈表未建，请先执行建表SQL' });
+      const sid = u.query.studentId, cls = u.query.className, les = u.query.lesson;
+      if (sid) rows = rows.filter(r => r.student_id === sid || (r.phone && sid === r.phone));
+      if (cls) rows = rows.filter(r => r.class_name === cls);
+      if (les) rows = rows.filter(r => r.lesson === les);
+      return send(res, 200, { ok: true, list: rows.map(r => ({ fid: r.fid, term: r.term, lesson: r.lesson, 讲次标题: r.lesson_title || '', 上课日期: r.lesson_date || '', studentId: r.student_id || '', 姓名: r.student_name, 班级: r.class_name, 老师: r.teacher, 学科: r.subject, 校区: r.campus, 状态: r.status, 正文: r.content || '', 备注: r.note || '' })) });
+    }
     if (p === '/api/student') {
       const st = d.studentsById[u.query.id];
       if (!st) return send(res, 404, { ok: false, 错误: '没有这个学员' });

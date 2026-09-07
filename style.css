@@ -465,3 +465,27 @@ tbody tr:hover { background: #F8FAFC; }
 /* ===== 矩阵旧类兼容 ===== */
 .slot-busy, .slot-free, .slot-rent { display: none; }
 .matrix-wrap, .matrix-table { display: none; }
+
+/* ===== 2026-09-08 助教工作台新组件 ===== */
+.quick-acts { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+.quick-acts .btn { box-shadow: 0 2px 8px rgba(37,99,235,.12); }
+.home-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 0; }
+@media (max-width: 860px) { .home-cols { grid-template-columns: 1fr; } }
+.overdue-bar {
+  background: #FEF2F2; border: 1px solid #FECACA; color: #B91C1C;
+  border-radius: 10px; padding: 10px 14px; font-size: 13px; margin-bottom: 14px; line-height: 1.6;
+}
+.todo-item {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 10px;
+  border: 1px solid #E2E8F0; border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; background: #fff;
+}
+.todo-item.todo-red { border-color: #FECACA; background: #FFF7F7; }
+.todo-main { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.todo-title { font-size: 13.5px; font-weight: 600; color: #1E293B; }
+.todo-sub { font-size: 12px; color: #64748B; margin-top: 4px; }
+.todo-acts { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.fb-card { border: 1px solid #E2E8F0; border-left: 4px solid #2563EB; border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; background: #FAFBFF; }
+.fb-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13.5px; }
+.fb-meta { font-size: 12px; margin: 4px 0 8px; }
+.fb-body { font-size: 13px; color: #1F2937; line-height: 1.75; white-space: pre-wrap; word-break: break-word; }
+.badge.red { background: #FEE2E2; color: #B91C1C; }

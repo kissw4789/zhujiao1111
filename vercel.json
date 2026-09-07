@@ -10,5 +10,11 @@
       "source": "/api/(.*)",
       "destination": "/api/[...route].js"
     }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron/remind",
+      "schedule": "0 9 * * *"
+    }
   ]
 }

@@ -18,39 +18,301 @@
     st.SCHEDULE.forEach(r => { (r.班级名 || [r.班级]).filter(Boolean).forEach(c => { schedMap[c] = { 星期: r.星期, 时间: r.时间 }; }); });
   }
 
+  // ================= 2026-09-08 助教个人工作台 · 首页重设计 =================
+  const TODO_KINDS = ['请假', '调课', '退费', '跟进', '反馈催收', '其他'];
+  const todoKindBadge = k => `<span class="badge ${k === '请假' ? 'gold' : k === '退费' ? 'red' : k === '调课' ? 'blue' : 'gray'}">${esc(k || '其他')}</span>`;
+
+  function todoPend() { return (st.TODO_LIST || []).filter(t => t.状态 === '待办'); }
+  function todoOverdue(today) { return todoPend().filter(t => (t.截止 || '') < today).sort((a, b) => String(a.截止).localeCompare(String(b.截止))); }
+  function todoToday(today) { return todoPend().filter(t => (t.截止 || '') === today); }
+  function todoWeek(today) {
+    const end = new Date(); end.setDate(end.getDate() + 7);
+    const endStr = `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, '0')}-${String(end.getDate()).padStart(2, '0')}`;
+    return todoPend().filter(t => (t.截止 || '') > today && (t.截止 || '') <= endStr).sort((a, b) => String(a.截止).localeCompare(String(b.截止)));
+  }
+  function todoItemHtml(t, red) {
+    return `<div class="todo-item${red ? ' todo-red' : ''}">
+      <div class="todo-main">${todoKindBadge(t.类型)}<span class="todo-title">${esc(t.标题)}</span></div>
+      <div class="todo-sub">${t.姓名 ? `👤 <a href="javascript:void(0)" class="todo-sid" data-sid="${esc(t.studentId || '')}" style="color:#2563EB;font-weight:600;text-decoration:none;">${esc(t.姓名)}</a>` : ''}${t.班级 ? `<span class="muted"> · ${esc(t.班级)}</span>` : ''}${t.备注 ? `<div class="muted" style="margin-top:2px;">${esc(t.备注)}</div>` : ''}</div>
+      <div class="todo-acts"><span class="muted" style="font-size:11px;">截止 ${esc(t.截止 || '—')}${t.提醒 ? ' ' + esc(t.提醒) : ''}</span><span class="btn sub sm todo-done" data-tid="${esc(t.tid)}" data-title="${esc(t.标题)}">完成</span><span class="btn sub sm todo-del" data-tid="${esc(t.tid)}" data-title="${esc(t.标题)}" style="color:#DC2626;">✕</span></div>
+    </div>`;
+  }
+  function bindTodoItemEvents(box) {
+    if (!box) return;
+    box.querySelectorAll('.todo-done').forEach(b => b.onclick = () => doneTodoDlg(b.dataset.tid, b.dataset.title));
+    box.querySelectorAll('.todo-del').forEach(b => b.onclick = async () => {
+      if (!confirm(`确认取消这条待办？\n${b.dataset.title}`)) return;
+      const r = await api.post('/api/todo/delete', { tid: b.dataset.tid, 标题: b.dataset.title });
+      if (r.ok) { toast('已取消'); await refresh(); } else alert(r.错误 || '操作失败');
+    });
+    box.querySelectorAll('.todo-sid').forEach(a => { if (a.dataset.sid) a.onclick = () => { location.hash = 'profile/' + encodeURIComponent(a.dataset.sid); }; });
+  }
+
   function renderHome() {
     const h = st.HOME || {};
     const s = h.看板 || {};
     const cur = h.当期 || '2026秋';
-    const tag = $('#homeTermTag'); if (tag) tag.textContent = `${termDispL(cur)} 数据云端同步`;
+    const today = todayStr();
+    const tag = $('#homeTermTag'); if (tag) tag.textContent = `${termDispL(cur)} · 我的个人工作台 · 云端同步`;
+
+    // 逾期红条（置顶警示）
+    const od = todoOverdue(today);
+    const odBox = $('#homeOverdue');
+    if (odBox) odBox.innerHTML = od.length ? `<div class="overdue-bar">🚨 <b>${od.length} 条待办已逾期</b>：${od.slice(0, 3).map(t => esc(t.标题)).join('；')}${od.length > 3 ? ` 等 ${od.length} 条` : ''} —— 请尽快处理</div>` : '';
+
+    // KPI 数字（缩小为辅，不再是主角）
     const stats = $('#homeStats');
     if (stats) stats.innerHTML = [
       [`${termDispL(cur)}在读人次`, s.当期在读 || 0, '人次'],
       [`${termDispL(cur)}去重学生`, s.去重学生 || 0, '人'],
       [`${termDispL(cur)}班级数`, s.当期班级 || 0, '个'],
-      ['当前课表', st.SCHEDULE.length, '项'],
+      ['待办未办', todoPend().length, '条'],
     ].map(x => `<div class="kpi-card"><div class="kpi-k">${x[0]}</div><div class="kpi-v">${x[1]}<span>${x[2]}</span></div></div>`).join('');
 
-    const todoBox = $('#homeTodo');
-    const todo = (h.今日待办 || []).length ? h.今日待办 : (st.LEAVES.length ? [{ type: '请假后续', count: st.LEAVES.length, text: `当前有 ${st.LEAVES.length} 条请假/退费待跟进` }] : []);
-    if (todoBox) todoBox.innerHTML = todo.length ? todo.map(t => `<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid #FDE68A;background:#FFFBEB;border-radius:8px;margin-bottom:8px;"><span class="badge gold">${esc(t.type || '待办')}</span><span style="font-size:13px;color:#1E293B;">${esc(t.text || '')}</span></div>`).join('') : '<div class="note ok">今日待办已全部处理</div>';
-    
+    // 今日待办（含逾期，置顶红）
+    const tt = $('#homeTodoToday');
+    if (tt) {
+      const list = od.concat(todoToday(today));
+      tt.innerHTML = list.length ? list.map(t => todoItemHtml(t, (t.截止 || '') < today)).join('') : '<div class="note ok">✅ 今日待办已全部清空</div>';
+      bindTodoItemEvents(tt);
+    }
+    // 本周待办（按天分组）
+    const tw = $('#homeTodoWeek');
+    if (tw) {
+      const wk = todoWeek(today);
+      if (!wk.length) { tw.innerHTML = '<div class="note">本周暂无其他待办</div>'; }
+      else {
+        const byDay = {};
+        wk.forEach(t => { (byDay[t.截止] = byDay[t.截止] || []).push(t); });
+        tw.innerHTML = Object.keys(byDay).sort().map(day => `<div style="margin-bottom:10px;"><div style="font-size:12px;font-weight:700;color:#64748B;margin-bottom:6px;">${esc(day)}</div>${byDay[day].map(t => todoItemHtml(t, false)).join('')}</div>`).join('');
+        bindTodoItemEvents(tw);
+      }
+    }
+
+    // 第1讲反馈进度
+    const fb = $('#homeFeedback');
+    if (fb) {
+      const meta = (st.FEEDBACK_META || [])[0];
+      if (!meta) {
+        fb.innerHTML = '<div class="note">反馈库云端建表后即可展示进度（建表SQL见交接文档附录）</div>';
+      } else {
+        const bs = meta.byStatus || {};
+        const pill = (k, cls) => bs[k] ? `<span class="badge ${cls}" style="margin-right:6px;">${esc(k)} ${bs[k]}</span>` : '';
+        fb.innerHTML = `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:4px 0;">
+          <b style="font-size:15px;">${esc(meta.lesson || '第1讲')}</b><span class="muted">共 ${meta.total} 人</span>
+          ${pill('已出反馈', 'free')}${pill('小明班免发', 'blue')}${pill('周三未开课', 'gold')}${pill('请假缺课', 'gold')}${pill('免发未到课', 'gray')}${pill('试听刚报未上', 'gray')}
+          <span class="muted" style="font-size:12px;">｜ 待跟进：周三班 9/9 开课后补发、请假学员补课后补发</span></div>`;
+      }
+    }
+
     // 今日排课：过滤 1 号教室与租用，按时间先后升序排序
     let td = (h.今日排课 || []).filter(r => String(r.教室 || '').trim() !== '1号' && !String(r.课程 || '').includes('租用') && r.来源 !== '教室租用');
     td.sort((a, b) => String(a.时间 || '').localeCompare(String(b.时间 || '')));
-    
-    const today = $('#homeToday');
-    if (today) today.innerHTML = td.length ? '<table><tr><th>星期</th><th>时间</th><th>课程/班级 (点击看学生)</th><th>老师</th><th>教室</th><th>校区</th><th>在班</th></tr>' +
+    const todayBox = $('#homeToday');
+    if (todayBox) todayBox.innerHTML = td.length ? '<table><tr><th>星期</th><th>时间</th><th>课程/班级 (点击看学生)</th><th>老师</th><th>教室</th><th>校区</th><th>在班</th></tr>' +
       td.map(r => `<tr><td>${esc(r.星期 || '')}</td><td class="tk">${esc(r.时间 || '')}</td><td><a href="javascript:void(0)" class="home-cls-link" data-cls="${esc(r.班号 || classRowLabel(r))}" style="color:#2563EB;font-weight:700;text-decoration:none;">${esc(classRowLabel(r))}</a></td><td>${esc(r.老师 || '')}</td><td>${esc(r.教室 || '')}</td><td class="muted">${esc(r.校区 || '')}</td><td><b style="color:#059669">${(r.在班 || []).length || r.在班人数 || 0}人</b></td></tr>`).join('') + '</table>' : '<div class="note">今日无排课</div>';
-    
-    if (today) {
-      today.querySelectorAll('.home-cls-link').forEach(el => {
+    if (todayBox) {
+      todayBox.querySelectorAll('.home-cls-link').forEach(el => {
         el.onclick = () => {
           const row = td.find(r => (r.班号 || classRowLabel(r)) === el.dataset.cls) || st.SCHEDULE.find(r => (r.班号 || classRowLabel(r)) === el.dataset.cls);
           if (row) classDetailDlg(row);
         };
       });
     }
+  }
+
+  // ---- 待办：新增弹窗（可一键联动登记请假）----
+  function openTodoDlg(preset = {}) {
+    const kinds = TODO_KINDS.map(k => `<option${preset.kind === k ? ' selected' : ''}>${k}</option>`).join('');
+    dlg('＋ 新增待办', `
+      ${FG('一句话待办 <b style="color:#B91C1C">*</b>', `<input id="td-title" placeholder="例：给张三登记9/10请假 / 跟进李四退费" value="${esc(preset.title || '')}">`)}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        ${FG('类型', `<select id="td-kind">${kinds}</select>`)}
+        ${FG('截止日期', `<input id="td-due" type="date" value="${esc(preset.due || todayStr())}">`)}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        ${FG('关联学员（选填）', `<input id="td-name" list="stuNameData" placeholder="输入姓名自动匹配档案" value="${esc(preset.name || '')}">`)}
+        ${FG('班级（选填）', `<input id="td-cls" list="classData" value="${esc(preset.cls || '')}">`)}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        ${FG('下班前提醒时刻', `<input id="td-remind" type="time" value="${esc(preset.remind || '17:00')}">`)}
+        ${FG('备注（选填）', `<input id="td-note" placeholder="补充细节" value="${esc(preset.note || '')}">`)}
+      </div>
+      <div id="td-leaveWrap" style="display:none;border:1px dashed #F59E0B;border-radius:8px;padding:10px 12px;margin-bottom:12px;background:#FFFBEB;">
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:#92400E;"><input type="checkbox" id="td-withLeave"> 同时直接登记请假（学员立即变请假状态，本待办自动完成）</label>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:8px;">
+          ${FG('请假日期', `<input id="td-leaveDate" type="date" value="${todayStr()}">`)}
+          ${FG('请假原因', `<input id="td-leaveReason" placeholder="例：病假 / 事假">`)}
+        </div>
+      </div>
+      ${dlgFoot('保存待办')}`, box => {
+      const kindSel = box.querySelector('#td-kind');
+      const syncLeave = () => { box.querySelector('#td-leaveWrap').style.display = kindSel.value === '请假' ? 'block' : 'none'; };
+      kindSel.onchange = syncLeave; syncLeave();
+      box.querySelector('#dlgCancel').onclick = dlgClose;
+      box.querySelector('#dlgOk').onclick = async () => {
+        const withLeave = box.querySelector('#td-withLeave').checked;
+        const body = {
+          标题: box.querySelector('#td-title').value.trim(), 类型: kindSel.value,
+          截止: box.querySelector('#td-due').value, 提醒: box.querySelector('#td-remind').value,
+          姓名: box.querySelector('#td-name').value.trim(), 班级: box.querySelector('#td-cls').value.trim(),
+          备注: box.querySelector('#td-note').value.trim(),
+        };
+        if (!body.标题) return dlgErr('待办标题必填');
+        if (withLeave) {
+          if (!body.姓名 || !body.班级) return dlgErr('联动登记请假必须填写学员与班级');
+          body.登记请假 = true; body.日期 = box.querySelector('#td-leaveDate').value; body.原因 = box.querySelector('#td-leaveReason').value.trim();
+        }
+        const r = await api.post('/api/todo/record', body);
+        if (!r.ok) return dlgErr(r.错误 || '保存失败');
+        dlgClose(); toast(withLeave ? '已登记请假并完成待办' : '待办已保存');
+        await refresh();
+      };
+    });
+  }
+
+  // ---- 待办：完成弹窗（可补记处理结果）----
+  function doneTodoDlg(tid, title) {
+    dlg('完成待办', `
+      <div style="font-size:13px;margin-bottom:10px;"><b>${esc(title)}</b></div>
+      ${FG('完成补记（选填）', `<input id="td-doneText" placeholder="例：已联系家长，请假已登记 / 已转交财务">`)}
+      ${dlgFoot('确认完成')}`, box => {
+      box.querySelector('#dlgCancel').onclick = dlgClose;
+      box.querySelector('#dlgOk').onclick = async () => {
+        const r = await api.post('/api/todo/done', { tid, 标题: title, 完成补记: box.querySelector('#td-doneText').value.trim() });
+        if (!r.ok) return dlgErr(r.错误 || '操作失败');
+        dlgClose(); toast('已完成 ✓'); await refresh();
+      };
+    });
+  }
+
+  // ---- 待办：全部清单弹窗 ----
+  function openTodoListDlg() {
+    const all = (st.TODO_LIST || []).slice();
+    const render = (box) => {
+      const pend = all.filter(t => t.状态 === '待办').sort((a, b) => String(a.截止).localeCompare(String(b.截止)));
+      const done = all.filter(t => t.状态 !== '待办').slice(0, 30);
+      box.querySelector('#td-allList').innerHTML =
+        (pend.length ? pend.map(t => todoItemHtml(t, (t.截止 || '') < todayStr())).join('') : '<div class="note ok">没有未办待办</div>') +
+        (done.length ? `<div style="font-size:12px;font-weight:700;color:#64748B;margin:14px 0 6px;">最近已完成 / 已取消（前30条）</div>` + done.map(t => `<div class="todo-item" style="opacity:.55;"><div class="todo-main">${todoKindBadge(t.类型)}<span class="todo-title" style="text-decoration:line-through;">${esc(t.标题)}</span></div><div class="todo-sub muted">${esc(t.状态)} ${esc(t.完成时间 || '')}${t.完成补记 ? ' · ' + esc(t.完成补记) : ''}</div></div>`).join('') : '');
+      bindTodoItemEvents(box.querySelector('#td-allList'));
+    };
+    dlg('全部待办', `<div id="td-allList" style="max-height:60vh;overflow:auto;"></div>`, box => {
+      render(box);
+      const ob = new MutationObserver(() => {});
+      box.addEventListener('click', () => setTimeout(() => render(box), 1200));
+    });
+  }
+
+  // ---- 提醒：下班前/逾期 弹窗提醒（站内）----
+  function checkTodoReminder() {
+    const today = todayStr();
+    const pend = todoPend();
+    if (!pend.length) return;
+    const od = todoOverdue(today);
+    const dueToday = todoToday(today);
+    const now = new Date();
+    const hm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const remindAt = dueToday.map(t => t.提醒).filter(Boolean).sort()[0] || '17:00';
+    const key = 'zj-remind-' + today;
+    let flags = {};
+    try { flags = JSON.parse(sessionStorage.getItem(key) || '{}'); } catch (e) {}
+    let kind = '';
+    if (od.length && !flags.overdue) kind = 'overdue';
+    else if (dueToday.length && hm >= remindAt && !flags.evening) kind = 'evening';
+    if (!kind) return;
+    flags[kind] = true;
+    try { sessionStorage.setItem(key, JSON.stringify(flags)); } catch (e) {}
+    const list = od.concat(dueToday);
+    dlg(kind === 'overdue' ? '🚨 有逾期待办未处理' : '🔔 下班前提醒：今日待办', `
+      <div style="font-size:13px;color:#475569;margin-bottom:10px;">${kind === 'overdue' ? `有 <b style="color:#DC2626">${od.length}</b> 条待办已过截止日期，请优先处理：` : `现在已过 ${esc(remindAt)}，今日还有 <b>${dueToday.length}</b> 条待办未办：`}</div>
+      <div style="max-height:50vh;overflow:auto;">${list.map(t => todoItemHtml(t, (t.截止 || '') < today)).join('')}</div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px;"><span class="btn" id="dlgCancel">知道了</span></div>`, box => {
+      box.querySelector('#dlgCancel').onclick = dlgClose;
+      bindTodoItemEvents(box);
+    });
+  }
+
+  // ---- 微信提醒设置/测试 ----
+  async function openWechatDlg() {
+    dlg('🔔 微信提醒设置', `
+      <div style="font-size:13px;line-height:1.8;color:#334155;">
+        <b>当前机制</b>：每天北京时间 <b>17:00</b> 云端自动检查未办待办，有则推送微信（Vercel Cron）。<br>
+        <b>开通步骤（一次性）</b>：<br>
+        方式A · Server酱（推送到个人微信）：微信搜「Server酱·Turbo」关注 → 扫码登录 sct.ftqq.com → 复制 SendKey → 填到 Vercel 环境变量 <code>SCT_SENDKEY</code>。<br>
+        方式B · 企业微信群机器人：群 → 设置 → 群机器人 → 添加 → 复制 Webhook 地址 → 填到 Vercel 环境变量 <code>WECHAT_WEBHOOK</code>。<br>
+        两个都填则优先 Server酱。另可在 Vercel 环境变量设 <code>CRON_SECRET</code> 加强鉴权。<br>
+        <b>站内提醒</b>：不依赖任何配置，打开工作台即有弹窗提醒（逾期立即提醒、下班前按提醒时刻提醒）。
+      </div>
+      <div id="wc-result" style="margin-top:10px;"></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px;"><span class="btn sub" id="dlgCancel">关闭</span><span class="btn" id="wc-test">立即测试推送</span></div>`, box => {
+      box.querySelector('#dlgCancel').onclick = dlgClose;
+      box.querySelector('#wc-test').onclick = async () => {
+        const rEl = box.querySelector('#wc-result');
+        rEl.innerHTML = '<div class="note">正在调用云端推送…</div>';
+        const r = await api.get('/api/cron/remind').catch(e => ({ ok: false, 错误: e.message }));
+        if (!r.ok) { rEl.innerHTML = `<div class="note" style="color:#DC2626;">失败：${esc(r.错误 || '未知错误')}</div>`; return; }
+        rEl.innerHTML = r.pending === 0
+          ? '<div class="note ok">✅ 当前无未办待办，无需推送</div>'
+          : (r.pushed ? `<div class="note ok">✅ 已推送 ${r.pending} 条待办到微信（通道：${esc(r.channel)}），请查收</div>`
+            : `<div class="note" style="color:#B45309;">有 ${r.pending} 条未办，但微信通道未配置（请按上方步骤填 SendKey 后重试）</div>`);
+      };
+    });
+  }
+
+  // ---- 反馈：按班浏览弹窗 ----
+  function openFeedbackBrowser() {
+    const meta = (st.FEEDBACK_META || [])[0];
+    const clsList = meta && meta.classes ? Object.keys(meta.classes).sort() : [];
+    dlg('📝 第1讲 · 按班浏览反馈', `
+      <div class="fbar" style="margin-bottom:10px;"><select id="fbw-cls">${clsList.map(c => `<option>${esc(c)}</option>`).join('')}</select><span class="note" id="fbw-info"></span></div>
+      <div id="fbw-list" style="max-height:62vh;overflow:auto;"></div>`, async box => {
+      const render = async () => {
+        const cls = box.querySelector('#fbw-cls').value;
+        const listBox = box.querySelector('#fbw-list');
+        listBox.innerHTML = '<div class="note">加载中…</div>';
+        const r = await api.get('/api/feedback/list?className=' + encodeURIComponent(cls)).catch(() => ({ list: [] }));
+        const list = r.list || [];
+        box.querySelector('#fbw-info').textContent = ` 共 ${list.length} 人`;
+        listBox.innerHTML = list.length ? list.map(f => fbCardHtml(f)).join('') : '<div class="note">本班暂无反馈记录</div>';
+        bindFbCopy(listBox);
+      };
+      box.querySelector('#fbw-cls').onchange = render;
+      await render();
+    });
+  }
+  function fbCardHtml(f) {
+    const fid = String(f.fid || '').replace(/[^A-Za-z0-9_-]/g, '_');
+    return `<div class="fb-card">
+      <div class="fb-head"><span><b>${esc(f.姓名 || '')}</b>${f.lesson ? ` · ${esc(f.lesson)}` : ''}${f.讲次标题 ? ` · ${esc(f.讲次标题)}` : ''}</span><span>${badge(f.状态 || '', f.状态 === '已出反馈' ? 'free' : 'gray')}${f.正文 ? ` <span class="btn sub sm fb-copy" data-fid="${esc(fid)}">一键复制</span>` : ''}</span></div>
+      <div class="fb-meta muted">${esc(f.班级 || '')}${f.老师 ? ' · ' + esc(f.老师) : ''}${f.上课日期 ? ' · ' + esc(f.上课日期) : ''}</div>
+      <div class="fb-body" id="fbc-${esc(fid)}">${esc(f.正文 || '（本讲次无反馈正文：' + (f.状态 || '') + '）')}</div>
+    </div>`;
+  }
+  function bindFbCopy(box) {
+    box.querySelectorAll('.fb-copy').forEach(b => b.onclick = () => {
+      const el = document.getElementById('fbc-' + b.dataset.fid);
+      const text = el ? el.innerText : '';
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(() => toast('已复制，可直接粘贴发家长'), () => toast('复制失败，请手动选择', false));
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = text; document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); toast('已复制，可直接粘贴发家长'); } catch (e) { toast('复制失败，请手动选择', false); }
+        document.body.removeChild(ta);
+      }
+    });
+  }
+
+  // ---- 学员档案：讲次反馈卡 ----
+  async function renderProfileFeedback(a) {
+    const box = $('#pfFeedback');
+    if (!box) return;
+    box.innerHTML = '<div class="note">加载中…</div>';
+    const r = await api.get('/api/feedback/list?studentId=' + encodeURIComponent(a.id)).catch(() => ({ list: [] }));
+    const list = r.list || [];
+    box.innerHTML = list.length ? list.map(f => fbCardHtml(f)).join('') : '<div class="note">暂无讲次反馈记录</div>';
+    bindFbCopy(box);
   }
 
   function fillStuFilters() {
@@ -488,6 +750,7 @@
       });
     }
     renderFollowTabContent('全部动态');
+    renderProfileFeedback(a);
 
     const orders = d.订单 || []; $('#pfPay').innerHTML = `<div class="kv"><div class="i"><span class="l">报名次数</span>${a.次数 || (d.报名 || []).length} 次</div><div class="i"><span class="l">累计已缴</span>${d.累计缴费 ? d.累计缴费 + ' 元' : '—'}</div><div class="i"><span class="l">订单数</span>${orders.length} 条</div></div>` + (orders.length ? '<table><tr><th>下单时间</th><th>商品</th><th>金额</th><th>状态</th></tr>' + orders.map(o => `<tr><td class="muted">${esc(o.下单)}</td><td>${esc(o.商品)}</td><td>${esc(o.金额)}</td><td>${badge(o.状态, o.状态 === '已支付' ? 'free' : 'gray')}</td></tr>`).join('') + '</table>' : '<div class="note">无订单记录</div>');
     const terms = {}; (d.报名 || []).forEach(r => { (terms[r.期] = terms[r.期] || []).push(r); });
@@ -648,6 +911,18 @@
     $('#flwAddQuickBtn') && ($('#flwAddQuickBtn').onclick = () => openAddFollowModal());
     $('#flwType') && ($('#flwType').onchange = renderFollowupPage);
     $('#flwKw') && ($('#flwKw').oninput = renderFollowupPage);
+    // ===== 2026-09-08 工作台快捷操作与提醒 =====
+    $('#qaTodo') && ($('#qaTodo').onclick = () => openTodoDlg());
+    $('#qaLeave') && ($('#qaLeave').onclick = () => openLeaveModal());
+    $('#qaStu') && ($('#qaStu').onclick = () => addStudentDlg());
+    $('#qaFlw') && ($('#qaFlw').onclick = () => openAddFollowModal());
+    $('#todoAllBtn') && ($('#todoAllBtn').onclick = () => openTodoListDlg());
+    $('#homeWechatBtn') && ($('#homeWechatBtn').onclick = () => openWechatDlg());
+    $('#fbBrowseBtn') && ($('#fbBrowseBtn').onclick = () => openFeedbackBrowser());
+    if (!window.__zjTodoTimer) {
+      window.__zjTodoTimer = setInterval(() => { if (st.LOGIN_OK && !document.hidden) checkTodoReminder(); }, 10 * 60 * 1000);
+      document.addEventListener('visibilitychange', () => { if (!document.hidden && st.LOGIN_OK) checkTodoReminder(); });
+    }
   }
   function renderAll() {
     buildSchedMap();
@@ -655,6 +930,8 @@
     const stuData = $('#stuData'); if (stuData) stuData.innerHTML = st.ROSTER.map(a => `<option value="${esc(a.id)}">${esc(a.姓名)}（${esc(a.年级 || '')} · ${esc(a.电话 || '')}）</option>`).join('');
     const classData = $('#classData'); if (classData) classData.innerHTML = [...new Set(st.ENROLL.map(x => x.班级).concat(st.SCHEDULE.map(x => x.班级 || x.课程)))].filter(Boolean).sort().map(c => `<option value="${esc(c)}">`).join('');
     renderHome(); renderStudents(); renderSchedule(); renderLeavePage(); renderOutlines(); fillMatrixFilters(); renderScheduleMatrix(); loadFollowups();
+    const stuNameData = $('#stuNameData'); if (stuNameData) stuNameData.innerHTML = st.ROSTER.map(a => `<option value="${esc(a.姓名)}">`).join('');
+    setTimeout(checkTodoReminder, 1200);
   }
   function onPage(id) {
     if (id === 'leave') loadLeaves();

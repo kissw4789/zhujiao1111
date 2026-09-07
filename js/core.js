@@ -85,6 +85,8 @@
     SCHEDULE: [],
     LEAVES: [],
     FOLLOWUPS: [],
+    TODO_LIST: [],
+    FEEDBACK_META: [],
     LOGIN_OK: false,
     currentPage: 'home',
     filters: {
@@ -214,6 +216,8 @@
     state.OUTLINES = b && b.outlines && typeof b.outlines === 'object' ? b.outlines : {};
     state.LEAVES = b && Array.isArray(b.leaves) ? b.leaves : [];
     state.FOLLOWUPS = b && Array.isArray(b.followups) ? b.followups : [];
+    state.TODO_LIST = b && Array.isArray(b.todoList) ? b.todoList : [];
+    state.FEEDBACK_META = b && Array.isArray(b.feedbackMeta) ? b.feedbackMeta : [];
     buildIndices();
     return state;
   };
