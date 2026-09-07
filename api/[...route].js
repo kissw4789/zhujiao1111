@@ -507,8 +507,55 @@ async function log(action, detail) {
   await upsert('op_logs', { source_hash: crypto.randomBytes(10).toString('hex'), logged_at: nowText(), action, target: detail && detail.对象 || '', class_name: detail && detail.班级 || '', change: detail && detail.变更 || '', detail: detail || {} }, 'source_hash');
 }
 async function handlePost(p, body, d) {
-  // ===== 【临时运维端点·2026-09-08】清理二次导入重复 + 修正首次报名时间，执行后即删 =====
+  // ===== 【临时运维端点·2026-09-08】清理二次导入重复行 + 修正首次报名时间，执行后即删 =====
   if (p === '/api/admin/dedup') {
+    // 1) 报名：按(学生,班级,学期)分组，重复组删除 -CLS- 型二次导入行（保留原始行）
+    const g = {};
+    d.enrollments.forEach(e => {
+      if (!e.student_id || !e.class_name || e.is_void) return;
+      const k = `${e.student_id}|${e.class_name}|${e.term || ''}`;
+      (g[k] = g[k] || []).push(e);
+    });
+    const delE = [];
+    Object.values(g).forEach(rows => {
+      if (rows.length < 2) return;
+      const clsRows = rows.filter(r => String(r.eid || '').includes('-CLS-'));
+      const origRows = rows.filter(r => !String(r.eid || '').includes('-CLS-'));
+      if (clsRows.length && origRows.length) delE.push(...clsRows.map(r => r.eid));
+    });
+    // 2) 订单：同 order_no 保留 id===order_no 的原始行，删其余（ORD-型二次导入行）
+    const g2 = {};
+    d.orders.forEach(o => { if (o.order_no) (g2[o.order_no] = g2[o.order_no] || []).push(o); });
+    const delO = [];
+    Object.values(g2).forEach(rows => {
+      if (rows.length < 2) return;
+      const keep = rows.find(r => r.id === r.order_no) || rows[0];
+      rows.forEach(r => { if (r.id !== keep.id) delO.push(r.id); });
+    });
+    // 3) 首次报名时间修正：first_date 应 = min(最早报名开课, 最早订单支付)
+    const enrMin = {};
+    d.enrollments.forEach(e => { if (e.start_date && e.student_id && !e.is_void) { const k = e.student_id; if (!enrMin[k] || e.start_date < enrMin[k]) enrMin[k] = e.start_date; } });
+    const ordMin = {};
+    d.orders.forEach(o => {
+      const d0 = String(o.paid_at || o.ordered_at || '').slice(0, 10);
+      [o.child_id, o.source_student_id].filter(Boolean).forEach(k => { if (d0 && (!ordMin[k] || d0 < ordMin[k])) ordMin[k] = d0; });
+    });
+    const fixes = [];
+    d.students.forEach(s => {
+      const cands = [enrMin[s.id], ordMin[s.id], ordMin[s.source_student_id]].filter(Boolean).sort();
+      if (cands.length && s.first_date && cands[0] !== s.first_date) fixes.push({ id: s.id, name: s.name, from: s.first_date, to: cands[0] });
+    });
+    if (body.confirm !== 'YES') {
+      return { ok: true, dry_run: true, will_delete_enrollments: delE.length, will_delete_orders: delO.length, will_fix_first_date: fixes.length, sample_enr: delE.slice(0, 3), sample_ord: delO.slice(0, 3), sample_fix: fixes.slice(0, 8) };
+    }
+    let en = 0, on = 0;
+    for (let i = 0; i < delE.length; i += 50) { await sb(`enrollments?eid=in.(${delE.slice(i, i + 50).map(encodeURIComponent).join(',')})`, { method: 'DELETE' }); en += Math.min(50, delE.length - i); }
+    for (let i = 0; i < delO.length; i += 50) { await sb(`orders?id=in.(${delO.slice(i, i + 50).map(encodeURIComponent).join(',')})`, { method: 'DELETE' }); on += Math.min(50, delO.length - i); }
+    for (const f of fixes) await patch('students', `id=eq.${encodeURIComponent(f.id)}`, { first_date: f.to });
+    await log('数据去重与首次修正', { 对象: `报名删${en}/订单删${on}/首次修${fixes.length}`, 变更: '清理二次导入重复行' });
+    return { ok: true, enrollments_deleted: en, orders_deleted: on, first_fixed: fixes.length, first_list: fixes };
+  }
+  if (p === '/api/todo/record') {
     // 1) enrollments：同(学生,班级)重复组中删除 -CLS- 型重复行（保留原始导入行）
     const g = {};
     d.enrollments.forEach(e => { const k = (e.student_id || '') + '|' + (e.class_name || ''); (g[k] = g[k] || []).push(e); });
