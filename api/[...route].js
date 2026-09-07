@@ -280,8 +280,14 @@ function orderBelongsToStudent(o, st) {
 function displayTime(weekday, timeRange, startDate) {
   const parts = [];
   if (startDate) parts.push(startDate);
-  if (weekday) parts.push(weekday);
-  if (timeRange) parts.push(timeRange);
+  const tr = String(timeRange || '').trim();
+  // 星期与时段去重：时段文本里已含星期则不重复拼接（修复"周日 2026-09-06 周日 13:30"式重复）
+  if (weekday && !tr.includes(weekday)) parts.push(weekday);
+  if (tr) {
+    // 时段按逗号去重连续重复段（修复导入异常产生的"13:30-15:30,13:30-15:30,…"18连重复）
+    const segs = [...new Set(tr.split(/[,，]/).map(s => s.trim()).filter(Boolean))];
+    parts.push(segs.join(','));
+  }
   return parts.join(' ') || '';
 }
 function classKey(v) {
@@ -464,10 +470,21 @@ function feedbackMeta(d) {
   const byLesson = {};
   (d.feedbacks || []).forEach(f => {
     const L = f.lesson || '第1讲';
-    const o = byLesson[L] = byLesson[L] || { lesson: L, lessonTitle: f.lesson_title || '', total: 0, byStatus: {}, classes: {} };
+    const o = byLesson[L] = byLesson[L] || { lesson: L, lessonTitle: f.lesson_title || '', total: 0, byStatus: {}, classes: {}, teachers: {} };
     o.total++;
-    o.byStatus[f.status || '未标记'] = (o.byStatus[f.status || '未标记'] || 0) + 1;
-    if (f.class_name) o.classes[f.class_name] = (o.classes[f.class_name] || 0) + 1;
+    const stt = f.status || '未标记';
+    o.byStatus[stt] = (o.byStatus[stt] || 0) + 1;
+    if (f.class_name) {
+      const c = o.classes[f.class_name] = o.classes[f.class_name] || { total: 0, done: 0, teacher: f.teacher || '', byStatus: {} };
+      c.total++;
+      c.byStatus[stt] = (c.byStatus[stt] || 0) + 1;
+      if (stt === '已出反馈') c.done++;
+    }
+    if (f.teacher) {
+      const t = o.teachers[f.teacher] = o.teachers[f.teacher] || { total: 0, done: 0 };
+      t.total++;
+      if (stt === '已出反馈') t.done++;
+    }
   });
   return Object.values(byLesson);
 }
@@ -490,6 +507,50 @@ async function log(action, detail) {
   await upsert('op_logs', { source_hash: crypto.randomBytes(10).toString('hex'), logged_at: nowText(), action, target: detail && detail.对象 || '', class_name: detail && detail.班级 || '', change: detail && detail.变更 || '', detail: detail || {} }, 'source_hash');
 }
 async function handlePost(p, body, d) {
+  // ===== 【临时运维端点·2026-09-08】清理二次导入重复 + 修正首次报名时间，执行后即删 =====
+  if (p === '/api/admin/dedup') {
+    // 1) enrollments：同(学生,班级)重复组中删除 -CLS- 型重复行（保留原始导入行）
+    const g = {};
+    d.enrollments.forEach(e => { const k = (e.student_id || '') + '|' + (e.class_name || ''); (g[k] = g[k] || []).push(e); });
+    const delE = [];
+    Object.values(g).forEach(rows => {
+      if (rows.length < 2) return;
+      const clsRows = rows.filter(r => String(r.eid || '').includes('-CLS-'));
+      const origRows = rows.filter(r => !String(r.eid || '').includes('-CLS-'));
+      if (clsRows.length && origRows.length) delE.push(...clsRows.map(r => r.eid));
+    });
+    // 2) orders：同 order_no 保留 id===order_no 的原始行，删 ORD- 型重复行
+    const g2 = {};
+    d.orders.forEach(o => { (g2[o.order_no] = g2[o.order_no] || []).push(o); });
+    const delO = [];
+    Object.values(g2).forEach(rows => {
+      if (rows.length < 2) return;
+      const keep = rows.find(r => r.id === r.order_no) || rows[0];
+      rows.forEach(r => { if (r.id !== keep.id) delO.push(r.id); });
+    });
+    // 3) first_date 修正：students.first_date 晚于 最早开课/最早订单 时改回最早值
+    const enrMin = {};
+    d.enrollments.forEach(e => { if (e.start_date && e.student_id) { const k = e.student_id; if (!enrMin[k] || e.start_date < enrMin[k]) enrMin[k] = e.start_date; } });
+    const ordMin = {};
+    d.orders.forEach(o => {
+      const d0 = String(o.paid_at || o.ordered_at || '').slice(0, 10);
+      const k = o.child_id || o.source_student_id;
+      if (d0 && k) { if (!ordMin[k] || d0 < ordMin[k]) ordMin[k] = d0; }
+    });
+    const fixes = [];
+    d.students.forEach(s => {
+      const cands = [enrMin[s.id], ordMin[s.id], ordMin[s.source_student_id]].filter(Boolean).sort();
+      if (cands.length && s.first_date && cands[0] < s.first_date) fixes.push({ id: s.id, name: s.name, from: s.first_date, to: cands[0] });
+    });
+    if (body.confirm !== 'YES') {
+      return { ok: true, dry_run: true, will_delete_enrollments: delE.length, will_delete_orders: delO.length, will_fix_first_date: fixes.length, first_sample: fixes.slice(0, 8) };
+    }
+    for (let i = 0; i < delE.length; i += 50) await sb(`enrollments?eid=in.(${delE.slice(i, i + 50).map(encodeURIComponent).join(',')})`, { method: 'DELETE' });
+    for (let i = 0; i < delO.length; i += 50) await sb(`orders?id=in.(${delO.slice(i, i + 50).map(encodeURIComponent).join(',')})`, { method: 'DELETE' });
+    for (const f of fixes) await patch('students', `id=eq.${encodeURIComponent(f.id)}`, { first_date: f.to });
+    await log('数据去重与首次修正', { 对象: `报名删${delE.length}/订单删${delO.length}/首次修${fixes.length}`, 变更: '清理二次导入重复行' });
+    return { ok: true, enrollments_deleted: delE.length, orders_deleted: delO.length, first_fixed: fixes.length, first_list: fixes };
+  }
   // ===== 2026-09-08 助教个人待办 =====
   if (p === '/api/todo/record') {
     if (!body.标题) return { ok: false, 错误: '待办标题必填' };
@@ -729,7 +790,12 @@ module.exports = async (req, res) => {
       if (sid) rows = rows.filter(r => r.student_id === sid || (r.phone && sid === r.phone));
       if (cls) rows = rows.filter(r => r.class_name === cls);
       if (les) rows = rows.filter(r => r.lesson === les);
-      return send(res, 200, { ok: true, list: rows.map(r => ({ fid: r.fid, term: r.term, lesson: r.lesson, 讲次标题: r.lesson_title || '', 上课日期: r.lesson_date || '', studentId: r.student_id || '', 姓名: r.student_name, 班级: r.class_name, 老师: r.teacher, 学科: r.subject, 校区: r.campus, 状态: r.status, 正文: r.content || '', 备注: r.note || '' })) });
+      // 催收看板：附带该班"应收反馈"在班人数（最新在册口径）
+      let activeInClass;
+      if (u.query.onlyActive && cls) {
+        activeInClass = new Set(d.enrollments.filter(e => e.class_name === cls && activeEnrollment(e)).map(e => e.student_id)).size;
+      }
+      return send(res, 200, { ok: true, activeInClass, list: rows.map(r => ({ fid: r.fid, term: r.term, lesson: r.lesson, 讲次标题: r.lesson_title || '', 上课日期: r.lesson_date || '', studentId: r.student_id || '', 姓名: r.student_name, 班级: r.class_name, 老师: r.teacher, 学科: r.subject, 校区: r.campus, 状态: r.status, 正文: r.content || '', 备注: r.note || '' })) });
     }
     if (p === '/api/student') {
       const st = d.studentsById[u.query.id];

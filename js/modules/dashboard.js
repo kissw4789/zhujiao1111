@@ -89,19 +89,24 @@
       }
     }
 
-    // 第1讲反馈进度
+    // 学情反馈进度（多讲次切换，实时反映云端反馈库）
     const fb = $('#homeFeedback');
     if (fb) {
-      const meta = (st.FEEDBACK_META || [])[0];
-      if (!meta) {
-        fb.innerHTML = '<div class="note">反馈库云端建表后即可展示进度（建表SQL见交接文档附录）</div>';
+      const metas = st.FEEDBACK_META || [];
+      if (!metas.length) {
+        fb.innerHTML = '<div class="note">反馈库暂无数据</div>';
       } else {
+        const curLesson = metas.find(m => m.lesson === st._fbLesson) ? st._fbLesson : metas[metas.length - 1].lesson;
+        st._fbLesson = curLesson;
+        const meta = metas.find(m => m.lesson === curLesson);
         const bs = meta.byStatus || {};
         const pill = (k, cls) => bs[k] ? `<span class="badge ${cls}" style="margin-right:6px;">${esc(k)} ${bs[k]}</span>` : '';
-        fb.innerHTML = `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:4px 0;">
-          <b style="font-size:15px;">${esc(meta.lesson || '第1讲')}</b><span class="muted">共 ${meta.total} 人</span>
+        const tabs = metas.length > 1 ? `<div style="display:flex;gap:6px;margin-bottom:8px;">${metas.map(m => `<span class="vt${m.lesson === curLesson ? ' on' : ''}" data-fblesson="${esc(m.lesson)}" style="cursor:pointer;">${esc(m.lesson)}</span>`).join('')}</div>` : '';
+        fb.innerHTML = tabs + `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:4px 0;">
+          <b style="font-size:15px;">${esc(meta.lesson || '')}</b><span class="muted">共 ${meta.total} 人 · 数据实时来自云端反馈库，录入即更新</span>
           ${pill('已出反馈', 'free')}${pill('小明班免发', 'blue')}${pill('周三未开课', 'gold')}${pill('请假缺课', 'gold')}${pill('免发未到课', 'gray')}${pill('试听刚报未上', 'gray')}
-          <span class="muted" style="font-size:12px;">｜ 待跟进：周三班 9/9 开课后补发、请假学员补课后补发</span></div>`;
+        </div>`;
+        fb.querySelectorAll('[data-fblesson]').forEach(el => el.onclick = () => { st._fbLesson = el.dataset.fblesson; renderHome(); });
       }
     }
 
@@ -260,26 +265,60 @@
     });
   }
 
-  // ---- 反馈：按班浏览弹窗 ----
+  // ---- 反馈：按班浏览弹窗（跟随当前讲次）----
   function openFeedbackBrowser() {
-    const meta = (st.FEEDBACK_META || [])[0];
+    const metas = st.FEEDBACK_META || [];
+    const meta = metas.find(m => m.lesson === st._fbLesson) || metas[0];
     const clsList = meta && meta.classes ? Object.keys(meta.classes).sort() : [];
-    dlg('📝 第1讲 · 按班浏览反馈', `
+    dlg(`📝 ${meta ? esc(meta.lesson) : ''} · 按班浏览反馈`, `
       <div class="fbar" style="margin-bottom:10px;"><select id="fbw-cls">${clsList.map(c => `<option>${esc(c)}</option>`).join('')}</select><span class="note" id="fbw-info"></span></div>
       <div id="fbw-list" style="max-height:62vh;overflow:auto;"></div>`, async box => {
       const render = async () => {
         const cls = box.querySelector('#fbw-cls').value;
         const listBox = box.querySelector('#fbw-list');
         listBox.innerHTML = '<div class="note">加载中…</div>';
-        const r = await api.get('/api/feedback/list?className=' + encodeURIComponent(cls)).catch(() => ({ list: [] }));
+        const r = await api.get('/api/feedback/list?className=' + encodeURIComponent(cls) + (meta ? '&lesson=' + encodeURIComponent(meta.lesson) : '')).catch(() => ({ list: [] }));
         const list = r.list || [];
-        box.querySelector('#fbw-info').textContent = ` 共 ${list.length} 人`;
+        const ci = meta && meta.classes && meta.classes[cls];
+        box.querySelector('#fbw-info').textContent = ci ? ` 已出反馈 ${ci.done}/${ci.total} 人` : ` 共 ${list.length} 人`;
         listBox.innerHTML = list.length ? list.map(f => fbCardHtml(f)).join('') : '<div class="note">本班暂无反馈记录</div>';
         bindFbCopy(listBox);
       };
       box.querySelector('#fbw-cls').onchange = render;
       await render();
     });
+  }
+
+  // ---- 反馈：老师催收看板（哪些老师/班级还没交，一目了然）----
+  function openTeacherFbBoard() {
+    const metas = st.FEEDBACK_META || [];
+    const meta = metas.find(m => m.lesson === st._fbLesson) || metas[0];
+    if (!meta) return toast('暂无反馈数据', false);
+    const classes = meta.classes || {};
+    const byTeacher = {};
+    Object.keys(classes).forEach(c => {
+      const t = classes[c].teacher || '未标注老师';
+      (byTeacher[t] = byTeacher[t] || []).push({ name: c, ...classes[c] });
+    });
+    const excused = ['小明班免发', '免发未到课', '试听刚报未上'];
+    const rows = Object.keys(byTeacher).sort((a, b) => {
+      const ra = byTeacher[a].filter(c => c.done === 0 && !Object.keys(c.byStatus || {}).every(s => excused.includes(s) || s === '周三未开课')).length;
+      const rb = byTeacher[b].filter(c => c.done === 0 && !Object.keys(c.byStatus || {}).every(s => excused.includes(s) || s === '周三未开课')).length;
+      return rb - ra;
+    }).map(t => {
+      const cls = byTeacher[t];
+      const done = cls.reduce((s, c) => s + c.done, 0), total = cls.reduce((s, c) => s + c.total, 0);
+      const missing = cls.filter(c => c.done === 0 && !Object.keys(c.byStatus || {}).every(s => excused.includes(s) || s === '周三未开课'));
+      return `<div class="fb-card" style="border-left-color:${missing.length ? '#DC2626' : '#059669'}">
+        <div class="fb-head"><span><b>${esc(t)}</b> <span class="muted">${cls.length} 个班 · 已出 ${done}/${total} 人</span></span><span>${missing.length ? `<span class="badge red">${missing.length} 个班未见提交</span>` : '<span class="badge free">已全部有反馈</span>'}</span></div>
+        <div style="margin-top:6px;">${cls.sort((a, b) => a.done - b.done).map(c => {
+          const stTxt = Object.entries(c.byStatus || {}).map(([k, v]) => `${k}${v}`).join(' ');
+          const allExcused = c.done === 0 && Object.keys(c.byStatus || {}).every(s => excused.includes(s) || s === '周三未开课');
+          return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:5px 8px;border-bottom:1px dashed #E5E7EB;font-size:12.5px;flex-wrap:wrap;"><span>${esc(c.name)}</span><span>${c.done > 0 ? `<span class="badge free">已出 ${c.done}/${c.total}</span>` : allExcused ? `<span class="badge gray">${esc(stTxt)}</span>` : '<span class="badge red">未提交</span>'}<span class="muted" style="font-size:11px;margin-left:6px;">${esc(stTxt)}</span></span></div>`;
+        }).join('')}</div>
+      </div>`;
+    }).join('');
+    dlg(`📣 ${esc(meta.lesson)} · 老师反馈催收看板`, `<div style="font-size:12.5px;color:#64748B;margin-bottom:10px;">按老师分组，红标 = 该班无一人有反馈正文（周三未开课/请假/免发不算欠交）。收到老师微信反馈后，到对应学员档案「＋ 录入讲次反馈」保存，本看板即实时更新。</div><div style="max-height:62vh;overflow:auto;">${rows}</div>`, () => {});
   }
   function fbCardHtml(f) {
     const fid = String(f.fid || '').replace(/[^A-Za-z0-9_-]/g, '_');
@@ -957,6 +996,7 @@
     $('#todoAllBtn') && ($('#todoAllBtn').onclick = () => openTodoListDlg());
     $('#homeWechatBtn') && ($('#homeWechatBtn').onclick = () => openWechatDlg());
     $('#fbBrowseBtn') && ($('#fbBrowseBtn').onclick = () => openFeedbackBrowser());
+    $('#fbTeacherBtn') && ($('#fbTeacherBtn').onclick = () => openTeacherFbBoard());
     if (!window.__zjTodoTimer) {
       window.__zjTodoTimer = setInterval(() => { if (st.LOGIN_OK && !document.hidden) checkTodoReminder(); }, 10 * 60 * 1000);
       document.addEventListener('visibilitychange', () => { if (!document.hidden && st.LOGIN_OK) checkTodoReminder(); });
