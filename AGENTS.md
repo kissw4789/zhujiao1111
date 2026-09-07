@@ -32,17 +32,17 @@
 
 ## 二、 业务模型与数据字典对照
 
-云端当前包含 321 名学员档案（在读275/已结课40/待开课6）、281 户家庭、672 条报名记录（2026秋在读657/待开课15；首页看板口径：在班299人次/去重269人/46门班——与花名册Excel对账口径完全一致）、班级视图49行（46门在班+3行空班展示）、94 项排课矩阵与 752 行/579 单订单（已支付661/已取消91，仅保留2026暑期+2026秋两季——非暑秋18行已于2026-09-07清理，更早全量历史底账见本地Excel），数据表设计如下：
+云端当前包含 321 名学员档案（在读275/已结课40/待开课6；首次报名时间已于2026-09-08按最早订单/报名修正274人）、281 户家庭、345 条报名记录（2026-09-08清理二次导入重复327行后，与花名册Excel完全一致；首页看板：在班299人次/去重269人/46门班）、班级视图49行（46门在班+3行空班展示）、94 项排课矩阵与 579 行/579 单订单（2026-09-08删除重复173行，累计缴费口径314万；仅保留2026暑期+2026秋两季，更早全量历史底账见本地Excel），数据表设计如下：
 
 | 表名 | 作用说明 | 关键主键/关联键 |
 | :--- | :--- | :--- |
 | `students` | 学员核心主档（一人一档） | `id` (主键), `family_id`, `name`, `phone`, `grade` |
 | `families` | 家庭关系表（解决二胎共用电话） | `family_id` (主键), `phone`, `source_name` |
 | `classes` | 秋季班级表（92行，看板口径46门在班） | `id` (主键), `class_name`, `teacher`, `campus`, `term` |
-| `enrollments` | 学员报读流水记录（672条） | `eid` (主键), `student_id`, `class_name`, `term`, `is_void` |
+| `enrollments` | 学员报读流水记录（345条，已去重） | `eid` (主键), `student_id`, `class_name`, `term`, `is_void` |
 | `schedule_items` | 教室与时空排课矩阵（94项） | `schedule_id` (主键), `room`, `weekday`, `time_range`, `teacher` |
-| `orders` | 学费支付订单（752行/579单，仅暑秋两季） | `id` (主键), `order_no`, `amount`, `payment_status` |
-| `leaves` | 在线请假与退费消课台账 | `lid` (主键), `student_id`, `class_name`, `refund_amount` |
+| `orders` | 学费支付订单（579行/579单，仅暑秋两季，已去重） | `id` (主键), `order_no`, `amount`, `payment_status` |
+| `leaves` | 在线请假与退费消课台账（3条：第1讲请假缺课补登） | `lid` (主键), `student_id`, `class_name`, `refund_amount` |
 | `followups` | 助教学情跟进/续班/拓科记录 | `id` (UUID), `student_id`, `kind`, `status`, `note` |
 | `op_logs` | 助教操作审计日志 | `id` (自增), `action`, `target`, `logged_at` |
 | `lesson_feedbacks` | 讲次学情反馈库（2026-09-08新建，299条第1讲，正文原汁原味） | `fid` (主键), `student_id`, `class_name`, `lesson`, `status`, `content` |
