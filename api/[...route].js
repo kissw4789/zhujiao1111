@@ -455,6 +455,15 @@ async function log(action, detail) {
   await upsert('op_logs', { source_hash: crypto.randomBytes(10).toString('hex'), logged_at: nowText(), action, target: detail && detail.对象 || '', class_name: detail && detail.班级 || '', change: detail && detail.变更 || '', detail: detail || {} }, 'source_hash');
 }
 async function handlePost(p, body, d) {
+  if (p === '/api/admin/orders/purge') {
+    // 【临时运维端点·2026-09-07】清理学期不属于 暑期/秋季 的历史订单行，用完即删
+    const bad = d.orders.filter(o => !['暑期', '秋季'].includes(String(o.term || '').trim()));
+    if (!bad.length) return { ok: true, deleted: 0, total: d.orders.length };
+    const ids = bad.map(o => o.id);
+    await sb(`orders?id=in.(${ids.map(x => encodeURIComponent(x)).join(',')})`, { method: 'DELETE' });
+    await log('清理非暑秋订单', { 对象: `${bad.length}行`, 变更: ids.slice(0, 5).join(',') + (ids.length > 5 ? '…' : '') });
+    return { ok: true, deleted: bad.length, before: d.orders.length, after: d.orders.length - bad.length, items: bad.map(o => ({ id: o.id, 姓名: o.student_name, 金额: o.amount, 状态: o.payment_status, 学期: o.term, 商品: o.product })) };
+  }
   if (p === '/api/leave/record') {
     if (!body.姓名 || !body.班级) return { ok: false, 错误: '学员姓名与班级必填' };
     let sid = body.studentId;
