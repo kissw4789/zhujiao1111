@@ -311,8 +311,45 @@
     box.innerHTML = '<div class="note">加载中…</div>';
     const r = await api.get('/api/feedback/list?studentId=' + encodeURIComponent(a.id)).catch(() => ({ list: [] }));
     const list = r.list || [];
-    box.innerHTML = list.length ? list.map(f => fbCardHtml(f)).join('') : '<div class="note">暂无讲次反馈记录</div>';
+    box.innerHTML = list.length ? list.map(f => fbCardHtml(f)).join('') : '<div class="note">暂无讲次反馈记录，点击右上角「＋ 录入讲次反馈」手动补录</div>';
     bindFbCopy(box);
+  }
+  // ---- 手动录入讲次反馈（学员档案页）----
+  function openFeedbackRecordDlg(a) {
+    const cur = (st.HOME && st.HOME.当期) || '2026秋';
+    const firstCls = (st.ENR_BY_ID[a.id] || [])[0] || {};
+    dlg('＋ 录入讲次反馈 · ' + a.姓名, `
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
+        ${FG('学期', `<input id="fb-term" value="${esc(cur)}">`)}
+        ${FG('讲次 <b style="color:#B91C1C">*</b>', `<input id="fb-lesson" value="第1讲">`)}
+        ${FG('上课日期', `<input id="fb-date" type="date" value="${todayStr()}">`)}
+      </div>
+      <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px;">
+        ${FG('班级', `<input id="fb-cls" list="classData" value="${esc(firstCls.班级 || '')}">`)}
+        ${FG('状态', `<select id="fb-status"><option>已出反馈</option><option>小明班免发</option><option>周三未开课</option><option>请假缺课</option><option>免发未到课</option><option>试听刚报未上</option></select>`)}
+      </div>
+      ${FG('反馈正文 <b style="color:#B91C1C">*</b>（老师原版，原样粘贴，不做删改）', `<textarea id="fb-content" rows="10" style="width:100%;box-sizing:border-box;" placeholder="【本讲内容】…\n【课堂表现】…\n【课后建议】…\n【课后作业】…"></textarea>`)}
+      ${dlgFoot('保存反馈')}`, box => {
+      box.querySelector('#dlgCancel').onclick = dlgClose;
+      box.querySelector('#dlgOk').onclick = async () => {
+        const body = {
+          student_id: a.id, student_name: a.姓名, phone: a.电话 || '',
+          term: box.querySelector('#fb-term').value.trim() || cur,
+          lesson: box.querySelector('#fb-lesson').value.trim(),
+          lesson_date: box.querySelector('#fb-date').value,
+          class_name: box.querySelector('#fb-cls').value.trim(),
+          status: box.querySelector('#fb-status').value,
+          content: box.querySelector('#fb-content').value,
+          note: '手动录入',
+        };
+        if (!body.lesson) return dlgErr('讲次必填');
+        if (!body.content.trim()) return dlgErr('反馈正文必填');
+        const r = await api.post('/api/feedback/record', body);
+        if (!r.ok) return dlgErr(r.错误 || '保存失败');
+        dlgClose(); toast('反馈已保存到云端');
+        renderProfileFeedback(a); refresh();
+      };
+    });
   }
 
   function fillStuFilters() {
@@ -751,6 +788,7 @@
     }
     renderFollowTabContent('全部动态');
     renderProfileFeedback(a);
+    const pfAddFb = $('#pfAddFb'); if (pfAddFb) pfAddFb.onclick = () => openFeedbackRecordDlg(a);
 
     const orders = d.订单 || []; $('#pfPay').innerHTML = `<div class="kv"><div class="i"><span class="l">报名次数</span>${a.次数 || (d.报名 || []).length} 次</div><div class="i"><span class="l">累计已缴</span>${d.累计缴费 ? d.累计缴费 + ' 元' : '—'}</div><div class="i"><span class="l">订单数</span>${orders.length} 条</div></div>` + (orders.length ? '<table><tr><th>下单时间</th><th>商品</th><th>金额</th><th>状态</th></tr>' + orders.map(o => `<tr><td class="muted">${esc(o.下单)}</td><td>${esc(o.商品)}</td><td>${esc(o.金额)}</td><td>${badge(o.状态, o.状态 === '已支付' ? 'free' : 'gray')}</td></tr>`).join('') + '</table>' : '<div class="note">无订单记录</div>');
     const terms = {}; (d.报名 || []).forEach(r => { (terms[r.期] = terms[r.期] || []).push(r); });
