@@ -45,6 +45,8 @@
 | `leaves` | 在线请假与退费消课台账 | `lid` (主键), `student_id`, `class_name`, `refund_amount` |
 | `followups` | 助教学情跟进/续班/拓科记录 | `id` (UUID), `student_id`, `kind`, `status`, `note` |
 | `op_logs` | 助教操作审计日志 | `id` (自增), `action`, `target`, `logged_at` |
+| `lesson_feedbacks` | 讲次学情反馈库（2026-09-08新建，299条第1讲，正文原汁原味） | `fid` (主键), `student_id`, `class_name`, `lesson`, `status`, `content` |
+| `todos` | 助教个人待办（2026-09-08新建，可联动登记请假+下班前提醒） | `tid` (主键), `kind`, `due_date`, `remind_at`, `status` |
 
 ---
 
