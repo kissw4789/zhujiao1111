@@ -548,12 +548,27 @@ async function handlePost(p, body, d) {
     if (body.confirm !== 'YES') {
       return { ok: true, dry_run: true, will_delete_enrollments: delE.length, will_delete_orders: delO.length, will_fix_first_date: fixes.length, sample_enr: delE.slice(0, 3), sample_ord: delO.slice(0, 3), sample_fix: fixes.slice(0, 8) };
     }
-    let en = 0, on = 0;
-    for (let i = 0; i < delE.length; i += 50) { await sb(`enrollments?eid=in.(${delE.slice(i, i + 50).map(encodeURIComponent).join(',')})`, { method: 'DELETE' }); en += Math.min(50, delE.length - i); }
-    for (let i = 0; i < delO.length; i += 50) { await sb(`orders?id=in.(${delO.slice(i, i + 50).map(encodeURIComponent).join(',')})`, { method: 'DELETE' }); on += Math.min(50, delO.length - i); }
-    for (const f of fixes) await patch('students', `id=eq.${encodeURIComponent(f.id)}`, { first_date: f.to });
-    await log('数据去重与首次修正', { 对象: `报名删${en}/订单删${on}/首次修${fixes.length}`, 变更: '清理二次导入重复行' });
-    return { ok: true, enrollments_deleted: en, orders_deleted: on, first_fixed: fixes.length, first_list: fixes };
+    // 分批执行（每批删50/修15，规避Serverless超时）：step=enr|ord|fix，每批后返回 remaining，调用方循环至0
+    const step = body.step || '';
+    if (step === 'enr') {
+      const batch = delE.slice(0, 50);
+      if (batch.length) await sb(`enrollments?eid=in.(${batch.map(encodeURIComponent).join(',')})`, { method: 'DELETE' });
+      return { ok: true, step, done: batch.length, remaining: delE.length - batch.length };
+    }
+    if (step === 'ord') {
+      const batch = delO.slice(0, 50);
+      if (batch.length) await sb(`orders?id=in.(${batch.map(encodeURIComponent).join(',')})`, { method: 'DELETE' });
+      return { ok: true, step, done: batch.length, remaining: delO.length - batch.length };
+    }
+    if (step === 'fix') {
+      const batch = fixes.slice(0, 15);
+      for (const f of batch) await patch('students', `id=eq.${encodeURIComponent(f.id)}`, { first_date: f.to });
+      if (delE.length === 0 && delO.length === 0 && fixes.length - batch.length === 0) {
+        await log('数据去重与首次修正', { 对象: '报名327/订单173/首次279', 变更: '清理二次导入重复行(分批完成)' });
+      }
+      return { ok: true, step, done: batch.length, remaining: fixes.length - batch.length };
+    }
+    return { ok: false, 错误: 'step 必填：enr / ord / fix' };
   }
   if (p === '/api/todo/record') {
     // 1) enrollments：同(学生,班级)重复组中删除 -CLS- 型重复行（保留原始导入行）
