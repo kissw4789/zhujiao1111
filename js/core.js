@@ -2,7 +2,12 @@
   const Z = window.ZJ = window.ZJ || {};
 
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const todayStr = () => new Date().toISOString().slice(0, 10);
+  const todayStr = () => {
+    const d = new Date();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${d.getFullYear()}-${m}-${day}`;
+  };
   const curTermLabel = () => {
     const d = new Date(), y = d.getFullYear(), m = d.getMonth() + 1;
     if (m >= 3 && m <= 5) return y + '春';
@@ -15,8 +20,6 @@
   const TEACHER_ALIASES = { '飞飞': '王易飞', '温温': '温佳炜', '小明': '小明老师', '小明老师': '小明老师', '小天': '陈世崇', '小树': '束亚成', '金金': '刘金鑫', '晓晓': '张梦晓', '章章': '章雪萍', '俞老师': '俞锐钦' };
   const GRADES = ['一年级', '二年级', '三年级', '四年级', '五年级', '六年级', '七年级', '八年级', '九年级'];
   const GRADE_ORDER = ['1年级', '2年级', '3年级', '4年级', '5年级', '6年级', '7年级', '8年级', '9年级'];
-  const RNU_TAG = { '已续班': 'free', '未续班': 'warn', '流失学员': 'gray' };
-  const TST_BADGE = { '在读': 'free', '待开课': 'blue', '已结课': 'gray', '退出': 'gray' };
   const TYPE_COLOR = { '尖子': 'c-zhong', '中考': 'c-zhong', '创新': 'c-chuang', '自招': 'c-chuang' };
   const SUBJ_COLOR = { '物理': 'c-wuli' };
   const SYS_SUBJECT = { '小学奥数': '数学', '初中数学': '数学', '初中物理': '物理' };
@@ -28,7 +31,7 @@
   const normalizeSubject = (v, className = '') => {
     const s = String(v || '') + String(className || '');
     if (s.includes('物理')) return '物理';
-    if (s.includes('数学') || s.includes('奥数') || s.includes('中考') || s.includes('自招') || s.includes('创新') || s.includes('尖子') || s.includes('小明')) return '数学';
+    if (s.includes('数学') || s.includes('奥数') || s.includes('奥综') || s.includes('小奥') || s.includes('中考') || s.includes('自招') || s.includes('创新') || s.includes('尖子') || s.includes('小明')) return '数学';
     return String(v || '数学') || '数学';
   };
   const classType = v => {
@@ -81,27 +84,15 @@
     OUTLINES: {},
     SCHEDULE: [],
     LEAVES: [],
-    RNU: null,
-    EXP: null,
-    OPLOG: [],
-    SYNC: null,
+    FOLLOWUPS: [],
     LOGIN_OK: false,
     currentPage: 'home',
     filters: {
-      stuFilter: '全部',
       stuKw: '',
       stuSort: 'dateDesc',
       leaveKw: '',
-      rnuFilter: '全部',
-      rnuKw: '',
-      expGrade: '',
-      expType: '',
-      expFollow: '',
-      expKw: '',
-      logAction: '',
-      logKw: '',
     },
-    PG: { stu: { page: 1, size: 10 }, sch: { page: 1, size: 15 }, log: { page: 1, size: 20 } },
+    PG: { stu: { page: 1, size: 10 }, sch: { page: 1, size: 15 }, flw: { page: 1, size: 20 } },
   };
 
   const api = async (path, opt = {}) => {
@@ -214,26 +205,15 @@
   };
 
   const loadAllData = async () => {
-    const [home, roster, enrollments, families, classes, outlines, leaves, oplog, sync] = await Promise.all([
-      get('/api/home'),
-      get('/api/students'),
-      get('/api/enrollments'),
-      get('/api/families'),
-      get('/api/classes'),
-      get('/api/outlines'),
-      get('/api/leave/list').catch(() => ({ leaves: [] })),
-      get('/api/oplog').catch(() => []),
-      get('/api/sync/status').catch(() => null),
-    ]);
-    state.HOME = home || {};
-    state.ROSTER = Array.isArray(roster) ? roster : [];
-    state.SCHEDULE = Array.isArray(classes) ? classes : [];
-    state.ENROLL = Array.isArray(enrollments) ? enrollments : [];
-    state.FAMILIES = Array.isArray(families) ? families : [];
-    state.OUTLINES = outlines && typeof outlines === 'object' ? outlines : {};
-    state.LEAVES = leaves && Array.isArray(leaves.leaves) ? leaves.leaves : Array.isArray(leaves) ? leaves : [];
-    state.OPLOG = Array.isArray(oplog) ? oplog : [];
-    state.SYNC = sync || null;
+    const b = await get('/api/bootstrap');
+    state.HOME = b && b.home || {};
+    state.ROSTER = b && Array.isArray(b.students) ? b.students : [];
+    state.SCHEDULE = b && Array.isArray(b.classes) ? b.classes : [];
+    state.ENROLL = b && Array.isArray(b.enrollments) ? b.enrollments : [];
+    state.FAMILIES = b && Array.isArray(b.families) ? b.families : [];
+    state.OUTLINES = b && b.outlines && typeof b.outlines === 'object' ? b.outlines : {};
+    state.LEAVES = b && Array.isArray(b.leaves) ? b.leaves : [];
+    state.FOLLOWUPS = b && Array.isArray(b.followups) ? b.followups : [];
     buildIndices();
     return state;
   };
@@ -317,7 +297,7 @@
     Z.modules && Z.modules.onPage && Z.modules.onPage('home');
   };
 
-  Z.utils = { esc, todayStr, curTermLabel, termDispL, termOf, fmtMoney, toMoney, normalizeTeacher, normalizeSubject, classType, normalizedClassName, stableHash, SEASON_NAME, TEACHER_ALIASES, GRADES, GRADE_ORDER, RNU_TAG, TST_BADGE, TYPE_COLOR, SUBJ_COLOR, SYS_SUBJECT };
+  Z.utils = { esc, todayStr, curTermLabel, termDispL, termOf, fmtMoney, toMoney, normalizeTeacher, normalizeSubject, classType, normalizedClassName, stableHash, SEASON_NAME, TEACHER_ALIASES, GRADES, GRADE_ORDER, TYPE_COLOR, SUBJ_COLOR, SYS_SUBJECT };
   Z.api = { request: api, get, post, put, del };
   Z.ui = { qs, qsa, ensureEl, renderPager, toast, dlg, dlgClose, dlgErr, FG, dlgFoot, showPage };
   Z.bootstrap = { loadAllData, ensureAuth, afterLogin, route, buildIndices };

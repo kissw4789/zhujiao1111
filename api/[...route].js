@@ -8,8 +8,11 @@ const SESSION_SECRET = process.env.SESSION_SECRET || 'dev-only-change-me';
 const SESSION_COOKIE = 'zhujiao_session';
 const TERM = '2026秋';
 
-const today = () => new Date().toISOString().slice(0, 10);
-const nowText = () => new Date().toISOString().slice(0, 16).replace('T', ' ');
+// 服务端运行在 UTC（Vercel），业务时间统一按北京时间展示
+const CN_TZ = 8 * 60 * 60 * 1000;
+const cnNowIso = () => new Date(Date.now() + CN_TZ).toISOString();
+const today = () => cnNowIso().slice(0, 10);
+const nowText = () => cnNowIso().slice(0, 16).replace('T', ' ');
 
 function sign(value) {
   return crypto.createHmac('sha256', SESSION_SECRET).update(value).digest('base64url');
@@ -70,6 +73,25 @@ function readBody(req) {
     });
     req.on('error', () => resolve({}));
   });
+}
+
+// 登录防爆破：按来源 IP 做简单的失败计数与延时（Serverless 下为尽力而为）
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const loginAttempts = new Map();
+function clientIp(req) {
+  return String(req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || '').split(',')[0].trim();
+}
+function loginBlocked(ip) {
+  const rec = loginAttempts.get(ip);
+  if (!rec) return false;
+  if (Date.now() - rec.first > 15 * 60 * 1000) { loginAttempts.delete(ip); return false; }
+  return rec.count >= 10;
+}
+function loginHit(ip) {
+  const rec = loginAttempts.get(ip) || { count: 0, first: Date.now() };
+  if (Date.now() - rec.first > 15 * 60 * 1000) { rec.count = 0; rec.first = Date.now(); }
+  rec.count++;
+  loginAttempts.set(ip, rec);
 }
 
 async function sb(path, options = {}) {
@@ -236,18 +258,11 @@ function termOf(dateStr) {
   if (m >= 9 && m <= 11) return y + '秋';
   return y + '寒';
 }
-function nextTerm(label) {
-  const y = Number(String(label || '').slice(0, 4)) || 2026;
-  const s = String(label || '').slice(4);
-  const seq = ['春', '暑', '秋', '寒'];
-  const i = seq.indexOf(s);
-  return s === '寒' ? (y + 1) + '春' : y + (seq[i + 1] || '秋');
-}
 function stableId(prefix) {
   return `${prefix}-${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`;
 }
 async function getData() {
-  const [students, families, enrollments, orders, schedule, outlines, followups, leaves, progress, familyRules, oplog] = await Promise.all([
+  const [students, families, enrollments, orders, schedule, outlines, followups, leaves] = await Promise.all([
     select('students', 'select=*&order=name.asc'),
     select('families', 'select=*'),
     select('enrollments', 'select=*&order=start_date.desc'),
@@ -256,15 +271,12 @@ async function getData() {
     select('course_outlines', 'select=*'),
     select('followups', 'select=*'),
     select('leaves', 'select=*'),
-    select('class_progress', 'select=*'),
-    select('family_assignment_rules', 'select=*'),
-    select('op_logs', 'select=*&order=id.desc&limit=500'),
   ]);
   const studentsById = Object.fromEntries(students.map(s => [s.id, s]));
   const familiesById = Object.fromEntries(families.map(f => [f.family_id, f]));
   const enrsByStudent = {};
   enrollments.forEach(e => { if (e.student_id) (enrsByStudent[e.student_id] = enrsByStudent[e.student_id] || []).push(e); });
-  return { students, families, enrollments, orders, schedule, outlines, followups, leaves, progress, familyRules, oplog, studentsById, familiesById, enrsByStudent };
+  return { students, families, enrollments, orders, schedule, outlines, followups, leaves, studentsById, familiesById, enrsByStudent };
 }
 function rosterView(d, now) {
   return d.students.map(st => {
@@ -329,7 +341,7 @@ function classRows(d) {
   });
 }
 function homeData(d, now) {
-  const cur = TERM, next = TERM;
+  const cur = TERM;
   const active = d.enrollments.filter(e => !e.is_void && e.student_id && e.term === cur && enrStatus(e, now) !== '已结课' && e.source_status !== '历史在班学生');
   const kids = new Set(active.map(e => e.student_id));
   const classes = new Set(active.map(e => e.class_name));
@@ -339,78 +351,37 @@ function homeData(d, now) {
     今天: now,
     星期: weekday,
     当期: cur,
-    招生期: next,
-    看板: { 当期在读: kids.size, 当期班级: classes.size, 下期已报: 0, 下期班级: 0, 已续班人数: 0, 续班率: 0, 待拓科人数: 0 },
+    看板: { 当期在读: kids.size, 当期班级: classes.size },
     今日排课: classRows(d).filter(s => s.星期 === weekday),
-    待办: { 跟进到期: [] },
   };
 }
-function followMap(d, kind, term) {
-  const out = {};
-  d.followups.filter(f => f.kind === kind && (!term || f.term === term)).forEach(f => {
-    out[f.student_id] = { 状态: f.status || '', 备注: f.note || '', 下次跟进: f.next_followup_date || '' };
-  });
-  return out;
+function mapLeaves(d) {
+  return d.leaves.filter(x => !(x.raw && x.raw.deleted)).map(x => ({ lid: x.lid, studentId: x.student_id, 姓名: x.student_name, 班级: x.class_name, 日期: x.leave_date, 原因: x.reason, 折算金额: x.refund_amount, 备注: x.note, 创建时间: x.created_at_text || x.created_at }));
 }
-function renewDetail(d, term = TERM, next = nextTerm(term)) {
-  const follow = followMap(d, 'renew', term);
-  const termEnr = d.enrollments.filter(e => e.term === term && !e.is_void && e.student_id);
-  const nextEnr = d.enrollments.filter(e => e.term === next && !e.is_void && e.student_id);
-  const nextByChild = {};
-  nextEnr.forEach(e => (nextByChild[e.student_id] = nextByChild[e.student_id] || []).push(e));
-  const byChild = {};
-  termEnr.forEach(e => (byChild[e.student_id] = byChild[e.student_id] || []).push(e));
-  const rows = Object.entries(byChild).map(([cid, es]) => {
-    const st = d.studentsById[cid] || {};
-    const fam = d.familiesById[st.family_id] || {};
-    const ne = nextByChild[cid] || [];
-    const activeThis = es.some(e => e.source_status !== '历史在班学生' && e.active_in_latest);
-    const activeNext = ne.some(e => e.source_status !== '历史在班学生' && e.active_in_latest);
-    const status = activeNext ? '已续班' : activeThis ? '未续班' : '流失学员';
-    return {
-      childId: cid,
-      姓名: st.name || cid,
-      电话: st.phone || '',
-      年级: st.grade || '',
-      家庭: fam.source_name || '',
-      状态: status,
-      期: ['整期'],
-      本期班级: es.map(e => ({ 班级: e.class_name, 开课: e.start_date, 源状态: e.source_status })),
-      下期班级: ne.map(e => ({ 班级: e.class_name, 开课: e.start_date })),
-      秋季退班: false,
-      仅缴费: false,
-      下期已缴: 0,
-      跟进: follow[cid] || { 状态: '', 备注: '', 下次跟进: '' },
-    };
-  });
-  const summary = { 上课学员: rows.length, 已续班: rows.filter(r => r.状态 === '已续班').length, 流失学员: rows.filter(r => r.状态 === '流失学员').length, 未续班: rows.filter(r => r.状态 === '未续班').length };
-  return { term, next, 汇总: summary, 分期: [{ 期: '整期', 开课: '', 人数: rows.length, 已续班: summary.已续班, 流失: summary.流失学员, 未续班: summary.未续班 }], 明细: rows, 待确认: [] };
+function mapFollowups(d) {
+  return (d.followups || []).map(f => ({
+    id: f.id,
+    studentId: f.student_id,
+    studentName: (d.studentsById[f.student_id] || {}).name || (f.raw && f.raw.studentName) || '',
+    phone: (d.studentsById[f.student_id] || {}).phone || '',
+    type: f.kind || f.status || '日常沟通',
+    subject: f.subject || (f.raw && f.raw.subject) || '全科',
+    content: f.note || '',
+    createdAt: f.created_at || (f.raw && f.raw.created_at) || '',
+    creator: f.creator || (f.raw && f.raw.creator) || '助教'
+  }));
 }
-function expansionDetail(d, term = TERM) {
-  const follow = followMap(d, 'expansion', term);
-  const rowsByKid = {};
-  d.enrollments.filter(e => !e.is_void && e.student_id && ['7', '8', '9'].includes(String(e.grade || '').charAt(0))).forEach(e => {
-    const st = d.studentsById[e.student_id] || {};
-    const r = rowsByKid[e.student_id] = rowsByKid[e.student_id] || { childId: e.student_id, 姓名: st.name || '', 年级: st.grade || e.grade || '', 电话: st.phone || '', familyId: st.family_id || '', 数学班: [], 物理班: [], 未识别班: [], 来源期次: [] };
-    const cls = { 班级: e.class_name, 期: e.term };
-    const sub = normalizeSubject(e.subject, e.class_name);
-    if (sub === '数学') r.数学班.push(cls);
-    else if (sub === '物理') r.物理班.push(cls);
-    else r.未识别班.push(cls);
-    r.来源期次.push(e.term);
-  });
-  const rows = Object.values(rowsByKid).map(r => {
-    r.数学班 = [...new Map(r.数学班.map(x => [x.期 + x.班级, x])).values()];
-    r.物理班 = [...new Map(r.物理班.map(x => [x.期 + x.班级, x])).values()];
-    r.未识别班 = [...new Map(r.未识别班.map(x => [x.期 + x.班级, x])).values()];
-    r.状态 = r.数学班.length && r.物理班.length ? '数学物理都已报' : r.数学班.length ? '数学已报·待拓物理' : r.物理班.length ? '物理已报·待拓数学' : '学科待确认';
-    r.秋季状态 = [...r.数学班, ...r.物理班].some(x => x.期 === term) ? '秋季已报名' : '秋季未报名';
-    r.跟进 = follow[r.childId] || { 状态: '未联系', 备注: '', 下次跟进: '' };
-    r.班级年级 = [r.年级];
-    r.年级待核对 = false;
-    return r;
-  }).filter(r => r.状态 !== '数学物理都已报');
-  return { term, 统计期次: [term], 汇总: { 总人数: rows.length, 待拓科: rows.filter(r => r.状态 !== '数学物理都已报').length, 数学单科: rows.filter(r => r.状态 === '数学已报·待拓物理').length, 物理单科: rows.filter(r => r.状态 === '物理已报·待拓数学').length, 双科: 0, 待确认归属: 0 }, 明细: rows, 待确认: [] };
+function bootstrapData(d, now) {
+  return {
+    home: homeData(d, now),
+    students: rosterView(d, now),
+    enrollments: d.enrollments.map(e => cnEnrollment(e, enrStatus(e, now))),
+    families: d.families.map(f => cnFamily(f, d.students.filter(s => s.family_id === f.family_id))),
+    classes: classRows(d).filter(r => r.来源 !== '教室租用' && String(r.教室 || '').trim() !== '1号' && !String(r.课程 || '').includes('租用')),
+    outlines: (d.outlines.find(x => x.id === 'main') || {}).payload || {},
+    leaves: mapLeaves(d),
+    followups: mapFollowups(d),
+  };
 }
 async function log(action, detail) {
   await upsert('op_logs', { source_hash: crypto.randomBytes(10).toString('hex'), logged_at: nowText(), action, target: detail && detail.对象 || '', class_name: detail && detail.班级 || '', change: detail && detail.变更 || '', detail: detail || {} }, 'source_hash');
@@ -436,29 +407,24 @@ async function handlePost(p, body, d) {
   if (p === '/api/followup/record') {
     const sid = body.studentId;
     if (!sid) return { ok: false, 错误: '缺少学员ID' };
-    const fid = stableId('FLW');
+    // followups 表 id 为 uuid；subject/creator 存进 raw（表结构无这两列），读取时从 raw 回退
     const row = {
-      id: fid,
+      id: crypto.randomUUID(),
       student_id: sid,
       kind: body.type || '日常沟通',
       status: body.type || '日常沟通',
-      subject: body.subject || '全科',
       note: body.content || body.note || '',
       created_at: new Date().toISOString(),
-      creator: body.creator || '助教',
-      raw: body
+      raw: { ...body, subject: body.subject || '全科', creator: body.creator || '助教' }
     };
     await upsert('followups', row, 'id');
     await log('日常跟进', { 对象: body.studentName || sid, 变更: `${body.type || '日常沟通'}: ${(body.content || '').slice(0, 30)}` });
     return { ok: true, item: row };
   }
-  if (p === '/api/renew/followup' || p === '/api/expansion/followup') {
-    const kind = p.includes('renew') ? 'renew' : 'expansion';
-    const source_key = `${kind}|${body.term || TERM}|${body.childId}`;
-    const row = { kind, term: body.term || TERM, student_id: body.childId || null, status: body.状态 || '', note: body.备注 || '', next_followup_date: body.下次跟进 || '', source_key, raw: body };
-    await upsert('followups', row, 'source_key');
-    await log(kind === 'renew' ? '续班跟进' : '拓科跟进', { 对象: body.childId || '', 变更: body.状态 || '' });
-    return { ok: true, 跟进: { 状态: row.status, 备注: row.note, 下次跟进: row.next_followup_date } };
+  if (p === '/api/enrollment/refund') {
+    await patch('enrollments', `eid=eq.${q(body.eid || '')}`, { is_void: true, updated_at: new Date().toISOString() });
+    await log('退费退班', { 对象: body.studentName || body.studentId || '', 班级: body.className || '', 变更: body.reason || '退费退班', reason: body.reason || '', refundAmount: body.amount || '', note: body.note || '' });
+    return { ok: true };
   }
   if (p === '/api/student') {
     const id = stableId('S');
@@ -492,11 +458,6 @@ async function handlePost(p, body, d) {
     await log(body.作废 ? '作废报名' : '恢复报名', { 对象: body.eid || '' });
     return { ok: true };
   }
-  if (p === '/api/family/assign') {
-    for (const eid of body.eids || []) await patch('enrollments', `eid=eq.${q(eid)}`, { student_id: body.childId, assignment_status: '人工确认', updated_at: new Date().toISOString() });
-    await log('确认家庭班级', { 对象: body.childId || '', 变更: `${(body.eids || []).length} 条报名` });
-    return { ok: true, 数量: (body.eids || []).length };
-  }
   return { ok: false, 错误: '当前云端版本暂不支持该操作' };
 }
 async function createEnrollment(studentId, familyId, st, body) {
@@ -520,7 +481,15 @@ module.exports = async (req, res) => {
     if (p === '/api/auth/status') return send(res, isAuthed(req) ? 200 : 401, { ok: isAuthed(req) });
     if (p === '/api/auth/login' && req.method === 'POST') {
       const body = await readBody(req);
-      if (!APP_PASSWORD || body.password === APP_PASSWORD) { setSessionCookie(req, res); return send(res, 200, { ok: true }); }
+      const ip = clientIp(req);
+      if (loginBlocked(ip)) { await sleep(1000); return send(res, 429, { ok: false, 错误: '尝试过于频繁，请稍后再试' }); }
+      if (!APP_PASSWORD || body.password === APP_PASSWORD) {
+        loginAttempts.delete(ip);
+        setSessionCookie(req, res);
+        return send(res, 200, { ok: true });
+      }
+      loginHit(ip);
+      await sleep(600);
       return send(res, 401, { ok: false, 错误: '密码不正确' });
     }
     if (p === '/api/auth/logout') { clearSessionCookie(req, res); return send(res, 200, { ok: true }); }
@@ -534,31 +503,14 @@ module.exports = async (req, res) => {
     }
 
     if (p === '/api/health') return send(res, 200, { ok: true, students: d.students.length, enrollments: d.enrollments.length, classes: d.schedule.length, families: d.families.length, supabase: !!SUPABASE_URL });
-    if (p === '/api/home') return send(res, 200, homeData(d, now));
-    if (p === '/api/students') return send(res, 200, rosterView(d, now));
-    if (p === '/api/enrollments') return send(res, 200, d.enrollments.map(e => cnEnrollment(e, enrStatus(e, now))));
-    if (p === '/api/families') return send(res, 200, d.families.map(f => cnFamily(f, d.students.filter(s => s.family_id === f.family_id))));
-    if (p === '/api/classes' || p === '/api/schedule') return send(res, 200, classRows(d).filter(r => r.来源 !== '教室租用' && String(r.教室 || '').trim() !== '1号' && !String(r.课程 || '').includes('租用')));
-    if (p === '/api/outlines') return send(res, 200, (d.outlines.find(x => x.id === 'main') || {}).payload || {});
+    if (p === '/api/bootstrap') return send(res, 200, bootstrapData(d, now));
     if (p === '/api/followup/list') {
       const sid = u.query.studentId;
-      let list = d.followups || [];
-      if (sid) list = list.filter(f => f.student_id === sid);
-      return send(res, 200, { ok: true, list: list.map(f => ({
-        id: f.id,
-        studentId: f.student_id,
-        studentName: (d.studentsById[f.student_id] || {}).name || f.raw?.studentName || '',
-        phone: (d.studentsById[f.student_id] || {}).phone || '',
-        type: f.kind || f.status || '日常沟通',
-        subject: f.subject || f.raw?.subject || '全科',
-        content: f.note || '',
-        createdAt: f.created_at || (f.raw && f.raw.created_at) || '',
-        creator: f.creator || (f.raw && f.raw.creator) || '助教'
-      })) });
+      let list = mapFollowups(d);
+      if (sid) list = list.filter(f => f.studentId === sid);
+      return send(res, 200, { ok: true, list });
     }
-    if (p === '/api/state') return send(res, 200, { leaves: d.leaves, opLog: d.oplog, expansion: d.followups.filter(f => f.kind === 'expansion'), renewFollowup: d.followups.filter(f => f.kind === 'renew') });
-    if (p === '/api/oplog') return send(res, 200, d.oplog.map(l => ({ 时间: l.logged_at, 动作: l.action, 对象: l.target, 班级: l.class_name, 变更: l.change, ...(l.detail || {}) })));
-    if (p === '/api/leave/list') return send(res, 200, { ok: true, leaves: d.leaves.filter(x => !(x.raw && x.raw.deleted)).map(x => ({ lid: x.lid, studentId: x.student_id, 姓名: x.student_name, 班级: x.class_name, 日期: x.leave_date, 原因: x.reason, 折算金额: x.refund_amount, 备注: x.note, 创建时间: x.created_at_text || x.created_at })) });
+    if (p === '/api/leave/list') return send(res, 200, { ok: true, leaves: mapLeaves(d) });
     if (p === '/api/student') {
       const st = d.studentsById[u.query.id];
       if (!st) return send(res, 404, { ok: false, 错误: '没有这个学员' });
@@ -576,12 +528,6 @@ module.exports = async (req, res) => {
       const orders = d.orders.filter(o => o.family_id === fam.family_id).map(cnOrder);
       return send(res, 200, { 家庭: cnFamily(fam, kids), 孩子: kids.map(cnStudent), 待分配报名: pending, 订单: orders, 家庭累计缴费: Math.round(orders.filter(o => o.状态 === '已支付').reduce((a, b) => a + Number(b.金额 || 0), 0)) });
     }
-    if (p === '/api/renew-detail') return send(res, 200, renewDetail(d, u.query.term || TERM, u.query.next || nextTerm(u.query.term || TERM)));
-    if (p === '/api/expansion') return send(res, 200, expansionDetail(d, u.query.term || TERM));
-    if (p === '/api/sync/status') return send(res, 200, { running: false, stage: '云端数据库已接入；机构自动同步暂未启用', startedAt: '', finishedAt: '', ok: null, error: '', report: null });
-    if (p === '/api/inbox') return send(res, 200, { 待处理: [], 台账: [] });
-    if (p === '/api/materials') return send(res, 200, { 做题痕迹: [], 学情反馈: [], 老师反馈: [], 家庭共享: [], 收件箱: [] });
-    if (p === '/api/reports') return send(res, 200, []);
     return send(res, 404, { ok: false, path: p, 错误: 'Not found' });
   } catch (e) {
     return send(res, 500, { ok: false, 错误: String(e && e.message || e) });

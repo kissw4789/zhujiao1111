@@ -1,6 +1,6 @@
 (function () {
   const Z = window.ZJ;
-  const { esc, termDispL, RNU_TAG, TST_BADGE, TYPE_COLOR, SUBJ_COLOR, SYS_SUBJECT, SEASON_NAME, GRADES, GRADE_ORDER, todayStr } = Z.utils;
+  const { esc, termDispL, TYPE_COLOR, SUBJ_COLOR, SYS_SUBJECT, SEASON_NAME, GRADES, GRADE_ORDER, todayStr } = Z.utils;
   const { qs: $, qsa: $$, renderPager, toast, dlg, dlgClose, dlgErr, FG, dlgFoot, showPage } = Z.ui;
   const api = Z.api;
   const st = Z.state;
@@ -8,7 +8,6 @@
 
   const badge = (s, cls = 'gray') => `<span class="badge ${cls}">${esc(s)}</span>`;
   const stTag = s => badge(s, s === '在读' ? 'free' : s === '待开课' ? 'blue' : 'gray');
-  const termStatusTag = s => `<span class="badge ${TST_BADGE[s] || 'gray'}">${esc(s)}</span>`;
   const typeBadge = t => `<span class="badge ${TYPE_COLOR[t] || 'gray'}">${esc(t)}</span>`;
   const subjBadge = s => s ? `<span class="badge ${SUBJ_COLOR[s] || 'gray'}">${esc(s)}</span>` : '';
   const classRowLabel = r => r.班级 || (r.班级名 || []).join('、') || r.课程 || '未命名班级';
@@ -62,21 +61,12 @@
     const camps = [...new Set(st.ENROLL.map(e => e.校区))].filter(Boolean).sort();
     const campus = $('#stuCampus'); if (campus) campus.innerHTML = '<option value="">全部校区</option>' + camps.map(c => `<option>${esc(c)}</option>`).join('');
   }
-  function termStatusOf(es, term) {
-    const rows = es.filter(e => e.期 === term && e.源状态 !== '历史在班学生' && !e.作废);
-    if (!rows.length) return es.some(e => e.期 === term) ? '退出' : '';
-    if (rows.some(e => e.状态 === '在读')) return '在读';
-    if (rows.some(e => e.状态 === '待开课')) return '待开课';
-    return '已结课';
-  }
   function stuRows() {
     const term = ($('#stuTerm') || {}).value || '2026秋', campus = ($('#stuCampus') || {}).value || '';
     const kw = st.filters.stuKw.trim().toLowerCase();
-    const cats = { '全部': () => true, '在读': a => a.tst === '在读', '待开课': a => a.tst === '待开课', '已结课': a => a.tst === '已结课' };
-    let rows = st.ROSTER.map(a => { const es = st.ENR_BY_ID[a.id] || []; return { st: a, es, tst: term === 'all' ? a.状态 : termStatusOf(es, term) }; });
+    let rows = st.ROSTER.map(a => { const es = st.ENR_BY_ID[a.id] || []; return { st: a, es }; });
     if (term !== 'all') rows = rows.filter(a => a.es.some(e => e.期 === term));
     if (campus) rows = rows.filter(a => a.es.some(e => e.校区 === campus && (term === 'all' || e.期 === term)));
-    rows = rows.filter(cats[st.filters.stuFilter] || cats['全部']);
     if (kw) rows = rows.filter(a => (a.st.姓名 || '').toLowerCase().includes(kw) || (a.st.电话 || '').includes(kw) || a.es.some(e => (e.班级 || '').toLowerCase().includes(kw)));
     if (st.filters.stuSort === 'name') rows.sort((a, b) => (a.st.姓名 || '').localeCompare(b.st.姓名 || '', 'zh'));
     else rows.sort((a, b) => st.filters.stuSort === 'dateAsc' ? (a.st.最近 || '').localeCompare(b.st.最近 || '') : (b.st.最近 || '').localeCompare(a.st.最近 || ''));
@@ -109,33 +99,20 @@
     
     // 按所报班级拆分行展示（一人兼报多科分多条展示，使多科目清晰明了）
     const flatRows = [];
-    rows.forEach(({ st: person, es, tst }) => {
+    rows.forEach(({ st: person, es }) => {
       const clsList = pickClsRows(es, term, person);
       if (clsList.length > 0) {
         clsList.forEach((e, idx) => {
-          flatRows.push({
-            person,
-            enroll: e,
-            tst,
-            totalEnr: clsList.length,
-            enrIndex: idx + 1
-          });
+          flatRows.push({ person, enroll: e, totalEnr: clsList.length, enrIndex: idx + 1 });
         });
       } else {
-        flatRows.push({
-          person,
-          enroll: null,
-          tst,
-          totalEnr: 0,
-          enrIndex: 0
-        });
+        flatRows.push({ person, enroll: null, totalEnr: 0, enrIndex: 0 });
       }
     });
 
     const pg = st.PG.stu, slice = flatRows.slice((pg.page - 1) * pg.size, pg.page * pg.size);
-    box.innerHTML = slice.length ? `<table><tr><th>学员姓名 / ID</th><th>报读科目/班级</th><th>上课时间段</th><th>任课老师</th><th>校区</th><th>联系电话</th><th>操作</th></tr>` + slice.map(({ person, enroll, tst, totalEnr, enrIndex }) => {
+    box.innerHTML = slice.length ? `<table><tr><th>学员姓名 / ID</th><th>报读科目/班级</th><th>上课时间段</th><th>任课老师</th><th>校区</th><th>联系电话</th><th>操作</th></tr>` + slice.map(({ person, enroll, totalEnr, enrIndex }) => {
       const multiTag = totalEnr > 1 ? `<span class="badge blue" style="margin-left:4px;font-size:10.5px;">兼报${totalEnr}科 (${enrIndex}/${totalEnr})</span>` : '';
-      const subj = enroll ? (enroll.学科 || (String(enroll.班级).includes('物理') ? '物理' : '数学')) : '';
       const timeStr = enroll ? clsTime(enroll) : '—';
       return `<tr><td class="tk"><b>${esc(person.姓名)}</b>${multiTag}<div class="muted" style="font-size:11px;font-family:monospace;margin-top:2px;">ID: ${esc(person.sourceStudentId || person.id)}</div></td><td>${enroll ? clsCell(enroll) : '<span class="muted">—</span>'}</td><td class="tk">${esc(timeStr)}</td><td>${enroll ? esc(enroll.老师 || '—') : '—'}</td><td class="muted">${enroll ? esc(enroll.校区 || '—') : '—'}</td><td class="muted">${esc(person.电话)}</td><td style="display:flex;gap:6px;"><span class="btn sub sm" data-id="${esc(person.id)}">学员档案</span><span class="btn sub sm" data-leave-kid="${esc(person.id)}" data-leave-name="${esc(person.姓名)}" data-leave-cls="${esc(enroll ? enroll.班级 : '')}">记请假</span></td></tr>`;
     }).join('') + '</table>' : '<div class="note">没有符合条件的学员</div>';
@@ -516,12 +493,6 @@
     showPage('family');
   }
 
-  async function loadRenew() { st.RNU = await api.get('/api/renew-detail?term=' + encodeURIComponent((($('#rnuTerm') || {}).value) || (st.HOME && st.HOME.当期) || '2026秋')); renderRenew(); }
-  function renderRenew() { const d = st.RNU; if (!d || !$('#rnuTable')) return; $('#rnuCount').textContent = `${termDispL(d.term)} · 上课 ${d.汇总.上课学员} · 已续 ${d.汇总.已续班} · 流失 ${d.汇总.流失学员} · 未续 ${d.汇总.未续班}`; const rows = d.明细 || []; $('#rnuSessions').innerHTML = '<div class="note">秋季为整期统计</div>'; $('#rnuTable').innerHTML = rows.length ? '<table><tr><th>学员</th><th>年级</th><th>本期班级</th><th>续班状态</th><th>跟进</th><th></th></tr>' + rows.slice(0, 200).map(r => `<tr><td class="tk"><b>${esc(r.姓名)}</b></td><td>${esc(r.年级 || '')}</td><td>${(r.本期班级 || []).map(c => esc(c.班级)).join('<br>')}</td><td><span class="badge ${RNU_TAG[r.状态] || 'gray'}">${esc(r.状态)}</span></td><td>${esc((r.跟进 || {}).状态 || '—')}</td><td><span class="btn sub sm" data-rnu-follow="${esc(r.childId)}">跟进</span><span class="btn sub sm" data-kid="${esc(r.childId)}">档案</span></td></tr>`).join('') + '</table>' : '<div class="note">没有符合条件的学员</div>'; $('#rnuTable').querySelectorAll('[data-kid]').forEach(b => b.onclick = () => location.hash = 'profile/' + encodeURIComponent(b.dataset.kid)); $('#rnuTable').querySelectorAll('[data-rnu-follow]').forEach(b => b.onclick = () => renewDlg(rows.find(x => x.childId === b.dataset.rnuFollow))); }
-  function renewDlg(r) { if (!r) return; const f = r.跟进 || {}; dlg('续班跟进 · ' + r.姓名, `${FG('跟进状态', `<select id="rf-state">${['未跟进', '已沟通', '考虑中', '已报名', '暂不考虑'].map(s => `<option${s === (f.状态 || '') ? ' selected' : ''}>${s}</option>`).join('')}</select>`)}${FG('备注', `<input id="rf-note" value="${esc(f.备注 || '')}">`)}${FG('下次跟进日期', `<input id="rf-date" type="date" value="${esc(f.下次跟进 || '')}">`)}${dlgFoot('保存')}`, box => { box.querySelector('#dlgCancel').onclick = dlgClose; box.querySelector('#dlgOk').onclick = async () => { const x = await api.post('/api/renew/followup', { term: st.RNU.term, childId: r.childId, 状态: box.querySelector('#rf-state').value, 备注: box.querySelector('#rf-note').value, 下次跟进: box.querySelector('#rf-date').value }); if (!x.ok) return dlgErr(x.错误 || '保存失败'); dlgClose(); loadRenew(); }; }); }
-  async function loadExpansion() { st.EXP = await api.get('/api/expansion?term=' + encodeURIComponent((st.HOME && st.HOME.招生期) || '2026秋')); renderExpansion(); }
-  function renderExpansion() { const d = st.EXP; if (!d || !$('#expTable')) return; const s = d.汇总 || {}; $('#expStats').innerHTML = [['总人数', s.总人数 || 0, '人'], ['待拓科', s.待拓科 || 0, '人'], ['数学单科', s.数学单科 || 0, '人'], ['物理单科', s.物理单科 || 0, '人']].map(x => `<div class="kpi-card"><div class="kpi-k">${x[0]}</div><div class="kpi-v">${x[1]}<span>${x[2]}</span></div></div>`).join(''); const rows = d.明细 || []; $('#expCount').textContent = `共 ${rows.length} 人`; $('#expTable').innerHTML = rows.length ? `<table><tr><th>学员</th><th>年级</th><th>数学班</th><th>物理班</th><th>拓科状态</th><th>跟进</th><th></th></tr>${rows.map(r => `<tr><td><b>${esc(r.姓名)}</b><div class="muted">${esc(r.电话)}</div></td><td>${esc(r.年级)}</td><td>${(r.数学班 || []).map(x => esc(x.班级)).join('<br>') || '<span class="muted">—</span>'}</td><td>${(r.物理班 || []).map(x => esc(x.班级)).join('<br>') || '<span class="muted">—</span>'}</td><td>${badge(r.状态, 'blue')}</td><td>${esc((r.跟进 || {}).状态 || '未联系')}</td><td><span class="btn sub sm" data-exp-follow="${esc(r.childId)}">记录跟进</span></td></tr>`).join('')}</table>` : '<div class="note">没有符合条件的学员</div>'; $('#expTable').querySelectorAll('[data-exp-follow]').forEach(b => b.onclick = () => expansionDlg(rows.find(x => x.childId === b.dataset.expFollow))); }
-  function expansionDlg(r) { if (!r) return; const f = r.跟进 || {}; dlg('拓科跟进 · ' + r.姓名, `${FG('跟进状态', `<select id="xf-state">${['未联系', '已沟通', '考虑中', '已报名', '暂不考虑', '无需拓科'].map(x => `<option${x === (f.状态 || '未联系') ? ' selected' : ''}>${x}</option>`).join('')}</select>`)}${FG('备注', `<input id="xf-note" value="${esc(f.备注 || '')}">`)}${FG('下次跟进日期', `<input id="xf-date" type="date" value="${esc(f.下次跟进 || '')}">`)}${dlgFoot('保存')}`, box => { box.querySelector('#dlgCancel').onclick = dlgClose; box.querySelector('#dlgOk').onclick = async () => { const x = await api.post('/api/expansion/followup', { term: (st.EXP && st.EXP.term) || '2026秋', childId: r.childId, 状态: box.querySelector('#xf-state').value, 备注: box.querySelector('#xf-note').value, 下次跟进: box.querySelector('#xf-date').value }); if (!x.ok) return dlgErr(x.错误 || '保存失败'); dlgClose(); loadExpansion(); }; }); }
 
   function renderOutlines() { const out = st.OUTLINES || {}; const sysEl = $('#olSys'); if (!sysEl) return; sysEl.innerHTML = Object.keys(out).map(s => `<option>${esc(s)}</option>`).join(''); fillTrack(); }
   function olTracks(sys) { return st.OUTLINES[sys] ? Object.keys(st.OUTLINES[sys]) : []; }
@@ -530,8 +501,6 @@
   function curOutline() { return ((st.OUTLINES[$('#olSys').value] || {})[$('#olTrack').value] || {})[$('#olSeason').value] || []; }
   function renderOutlineDetail() { if (!$('#olPretty')) return; const rows = curOutline(), sys = $('#olSys').value, tr = $('#olTrack').value, se = $('#olSeason').value, seName = SEASON_NAME[se] || se; $('#olCount').textContent = `共 ${rows.length} 讲 · ${SYS_SUBJECT[sys] || ''}`; $('#olTitle').textContent = `${sys || ''} · ${tr || ''} · ${seName || ''}内容明细`; $('#olPretty').innerHTML = rows.length ? rows.map(r => `<div class="ol-row"><span class="n">第${r.n}讲</span><span><span class="t">${esc(r.topic)}</span>${r.module ? `<span class="m">${esc(r.module)}</span>` : ''}${r.desc ? `<div class="d">${esc(r.desc)}</div>` : ''}</span></div>`).join('') : '<div class="note">没有该大纲数据</div>'; }
 
-  function renderRep() { const el = $('#repStu'); if (el) el.innerHTML = st.ROSTER.map(a => `<option value="${esc(a.id)}">${esc(a.姓名)}（${esc(a.年级 || '')}${(a.当期 && a.当期[0] || {}).班级 ? ' · ' + esc(a.当期[0].班级) : ' · 无当期班'}）</option>`).join(''); }
-  function renderSync() {}
 
   function editStudentDlg(a) { dlg('编辑学员 · ' + a.姓名, `${FG('姓名 <b style="color:#B91C1C">*</b>', `<input id="es-name" value="${esc(a.姓名)}">`)}<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">${FG('联系电话', `<input id="es-phone" value="${esc(a.电话 || '')}">`)}${FG('年级', `<select id="es-grade"><option value=""></option>${GRADES.map(g => `<option${g === a.年级 ? ' selected' : ''}>${g}</option>`).join('')}</select>`)}</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">${FG('性别', `<select id="es-sex"><option value=""></option><option${a.性别 === '男' ? ' selected' : ''}>男</option><option${a.性别 === '女' ? ' selected' : ''}>女</option></select>`)}${FG('备注', `<input id="es-note" value="${esc(a.备注 || '')}">`)}</div>${dlgFoot('保存')}`, box => { box.querySelector('#dlgCancel').onclick = dlgClose; box.querySelector('#dlgOk').onclick = async () => { const body = { id: a.id, 姓名: box.querySelector('#es-name').value.trim(), 电话: box.querySelector('#es-phone').value.trim(), 年级: box.querySelector('#es-grade').value, 性别: box.querySelector('#es-sex').value, 备注: box.querySelector('#es-note').value.trim() }; if (!body.姓名) return dlgErr('姓名必填'); const r = await api.post('/api/student/edit', body); if (!r.ok) return dlgErr(r.错误 || '保存失败'); dlgClose(); await refresh(); if (location.hash.startsWith('#profile/')) openProfile(a.id); else renderStudents(); }; }); }
   function addStudentDlg(familyId = '') {
@@ -625,12 +594,11 @@
         if (okBtn.disabled) return;
         okBtn.disabled = true; okBtn.textContent = '处理中...';
         try {
-          const r = await api.post('/api/enrollment/void', { eid, 作废: true });
+          const r = await api.post('/api/enrollment/refund', {
+            eid, studentId: student.id, studentName: student.姓名,
+            className, reason, amount: amount || 0, note
+          });
           if (!r.ok) { okBtn.disabled = false; okBtn.textContent = '确认退费退班'; return dlgErr(r.错误 || '操作失败'); }
-          await api.post('/api/leave/record', {
-            studentId: student.id, 姓名: student.姓名, 班级: className,
-            日期: todayStr(), 折算金额: amount || 0, 原因: '退费退班: ' + reason, 备注: note
-          }).catch(() => {});
           dlgClose(); toast('已成功退费退班'); await refresh();
           if (location.hash.startsWith('#profile/')) openProfile(student.id);
         } catch (e) { okBtn.disabled = false; okBtn.textContent = '确认退费退班'; dlgErr('网络异常，请重试'); }
@@ -645,7 +613,6 @@
     $('#addStuBtn') && ($('#addStuBtn').onclick = () => addStudentDlg());
     $('#newLeaveBtn') && ($('#newLeaveBtn').onclick = () => openLeaveModal());
     $('#leaveKw') && ($('#leaveKw').oninput = e => { st.filters.leaveKw = e.target.value; renderLeavePage(); });
-    $$('#p-stu .fbar .chip[data-f]').forEach(c => c.onclick = () => { st.filters.stuFilter = c.dataset.f; st.PG.stu.page = 1; renderStudents(); });
     $('#stuSearch') && ($('#stuSearch').oninput = e => { st.filters.stuKw = e.target.value; st.PG.stu.page = 1; renderStudents(); });
     $('#stuSort') && ($('#stuSort').onchange = e => { st.filters.stuSort = e.target.value; renderStudents(); });
     $('#stuTerm') && ($('#stuTerm').onchange = () => { st.PG.stu.page = 1; renderStudents(); });
@@ -653,12 +620,8 @@
     ['schTerm', 'schType', 'schGrade', 'schSubject', 'schDay', 'schTeacher', 'schCampus'].forEach(id => $('#' + id) && ($('#' + id).onchange = () => { st.PG.sch.page = 1; renderSchedule(); }));
     $('#schKw') && ($('#schKw').oninput = () => { st.PG.sch.page = 1; renderSchedule(); });
     $('#schReset') && ($('#schReset').onclick = () => { ['schType', 'schGrade', 'schSubject', 'schTeacher', 'schCampus', 'schDay'].forEach(id => { const el = $('#' + id); if (el) el.value = ''; }); $('#schKw').value = ''; const t = $('#schTerm'); if (t) t.value = '2026秋'; renderSchedule(); });
-    $('#rnuTerm') && ($('#rnuTerm').onchange = loadRenew);
-    $('#rnuSession') && ($('#rnuSession').onchange = renderRenew);
-    $('#rnuSearch') && ($('#rnuSearch').oninput = e => { st.filters.rnuKw = e.target.value; renderRenew(); });
-    $$('#p-rec [data-rf]').forEach(c => c.onclick = () => { st.filters.rnuFilter = c.dataset.rf; renderRenew(); });
-    $('#expGrade') && ($('#expGrade').onchange = renderExpansion); $('#expType') && ($('#expType').onchange = renderExpansion); $('#expFollow') && ($('#expFollow').onchange = renderExpansion); $('#expSearch') && ($('#expSearch').oninput = renderExpansion);
     $('#olSys') && ($('#olSys').onchange = fillTrack); $('#olTrack') && ($('#olTrack').onchange = fillSeason); $('#olSeason') && ($('#olSeason').onchange = renderOutlineDetail);
+    $('#olCopy') && ($('#olCopy').onclick = copyOutlineMd); $('#olImg') && ($('#olImg').onclick = renderOutlineImage);
     $('#schToggleView') && ($('#schToggleView').onclick = () => {
       const isMatrix = !$('#schMatrixView').classList.contains('hide');
       $('#schMatrixView').classList.toggle('hide', isMatrix);
@@ -682,6 +645,72 @@
     if (id === 'leave') loadLeaves();
     if (id === 'flw') loadFollowups();
     if (id === 'oln') renderOutlineDetail();
+  }
+
+  function outlineMarkdown() {
+    const rows = curOutline(), sys = $('#olSys').value, tr = $('#olTrack').value, se = $('#olSeason').value, seName = SEASON_NAME[se] || se;
+    const lines = [`# ${sys} · ${tr} · ${seName}内容明细`, `共 ${rows.length} 讲`];
+    rows.forEach(r => {
+      lines.push(`## 第${r.n}讲 ${r.module ? '【' + r.module + '】' : ''}${r.topic}`);
+      if (r.desc) lines.push(r.desc);
+    });
+    return lines.join('\n\n');
+  }
+  async function copyOutlineMd() {
+    if (!curOutline().length) { toast('当前无大纲数据', false); return; }
+    const md = outlineMarkdown();
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(md);
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = md; ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.select();
+        document.execCommand('copy'); document.body.removeChild(ta);
+      }
+      toast('大纲 Markdown 已复制');
+    } catch (e) {
+      toast('复制失败，请重试', false);
+    }
+  }
+  function renderOutlineImage() {
+    const rows = curOutline(), sys = $('#olSys').value, tr = $('#olTrack').value, se = $('#olSeason').value, seName = SEASON_NAME[se] || se;
+    if (!rows.length) { toast('当前无大纲数据', false); return; }
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    const pad = 44, baseW = 760, lineH = 40;
+    let totalH = 150;
+    rows.forEach(r => { totalH += lineH; if (r.desc) totalH += Math.ceil(String(r.desc).length / 30) * 26 + 12; });
+    canvas.width = baseW; canvas.height = totalH;
+    ctx.fillStyle = '#FFFFFF'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#001A35'; ctx.font = 'bold 26px "Microsoft YaHei", sans-serif';
+    ctx.fillText(`${sys} · ${tr} · ${seName}内容明细`, pad, 66, baseW - pad * 2);
+    ctx.fillStyle = '#0046B8'; ctx.font = 'bold 14px "Microsoft YaHei", sans-serif';
+    ctx.fillText(`共 ${rows.length} 讲`, pad, 100);
+    let y = 128;
+    rows.forEach(r => {
+      ctx.fillStyle = '#0046B8'; ctx.font = 'bold 13px "Microsoft YaHei", sans-serif';
+      ctx.fillText(`第${r.n}讲`, pad, y);
+      ctx.fillStyle = '#0B192C'; ctx.font = 'bold 17px "Microsoft YaHei", sans-serif';
+      ctx.fillText(`${r.module ? '【' + r.module + '】' : ''}${r.topic}`, pad + 70, y);
+      y += lineH;
+      if (r.desc) {
+        ctx.fillStyle = '#5E6E85'; ctx.font = '14px "Microsoft YaHei", sans-serif';
+        const text = String(r.desc);
+        let line = '';
+        for (const ch of text) {
+          if (ctx.measureText(line + ch).width > baseW - pad * 2 && line) { ctx.fillText(line, pad + 70, y); line = ch; y += 26; }
+          else line += ch;
+        }
+        if (line) { ctx.fillText(line, pad + 70, y); y += 10; }
+      }
+      y += 12;
+    });
+    const dataUrl = canvas.toDataURL('image/png');
+    $('#olImgBox').innerHTML = `<img src="${dataUrl}" alt="大纲图片">`;
+    $('#olDownload').href = dataUrl;
+    $('#olDownload').setAttribute('download', `${sys}-${tr}-${seName}大纲.png`);
+    $('#olImgCard').classList.remove('hide');
   }
 
   M.openClassByNo = function(classNo) {
