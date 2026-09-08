@@ -414,13 +414,14 @@ function segmentationActions(st, seg, d) {
     const sourceKey = `seg:${st.id}:${rule}:${due.slice(0, 7)}`;
     if (!(d.todos || []).some(t => t.source_key === sourceKey || (t.raw && t.raw.source_key === sourceKey))) actions.push({ sourceKey, rule, title, due });
   };
-  add('weekly_touch', `【${seg.分层名称}】${st.name} 家长触达`, 0);
+  // 说明：S/A 的"每周家长触达"由首页优先跟进卡常态化承载，不批量生成待办
+  // 只对明确风险/例外生成待办：欠费/请假回访/反馈催收/家庭核对/转介绍待处理
   seg.风险标签.forEach(t => {
     if (t.code === 'ARREARS') add('arrears', `${st.name} 欠费核对与提醒`, 0);
     if (t.code === 'ABSENCE') add('absence', `${st.name} 请假后续/补课回访`, 1);
     if (t.code === 'FEEDBACK_PENDING') add('feedback', `${st.name} 讲次反馈催收`, 0);
     if (t.code === 'FAMILY_REVIEW') add('family_review', `${st.name} 家庭归属核对`, 0);
-    if (t.code === 'NO_NEXT_ACTION') add('followup_plan', `${st.name} 补充下一步跟进安排`, 0);
+    if (t.code === 'REFERRAL_PENDING') add('referral', `${st.name} 转介绍流程待推进`, 0);
   });
   return actions;
 }
@@ -999,8 +1000,22 @@ async function handlePost(p, body, d) {
     for (let i = 0; i < batch.length; i += 50) {
       await upsert('todos', batch.slice(i, i + 50), 'tid').catch(() => { skipped += Math.min(50, batch.length - i); });
     }
-    await log('同步分层动作', { 对象: '全部', 变更: `新增${created} 已有${existing} 跳过${skipped}` });
-    return { ok: true, 新增: created, 已有: existing, 跳过: skipped };
+    // 对账：把不再生成规则的、状态为"待办"的 seg 源待办标记"已取消"（不删除，PRD 13.3）
+    const currentRules = new Set(['arrears', 'absence', 'feedback', 'family_review', 'referral']);
+    const staleSegTodos = (d.todos || []).filter(t =>
+      t.status === '待办' &&
+      (t.source_key || (t.raw && t.raw.source_key) || '').startsWith('seg:') &&
+      !currentRules.has(t.note || (t.raw && t.raw.rule) || '')
+    );
+    let cancelled = 0;
+    for (let i = 0; i < staleSegTodos.length; i += 50) {
+      const slice = staleSegTodos.slice(i, i + 50);
+      const tasks = slice.map(t => patch('todos', `tid=eq.${q(t.tid)}`, { status: '已取消', done_at_text: nowText(), done_text: '规则已调整，系统自动清理' }).catch(() => null));
+      await Promise.all(tasks);
+      cancelled += slice.length;
+    }
+    await log('同步分层动作', { 对象: '全部', 变更: `新增${created} 已有${existing} 取消过期${cancelled} 跳过${skipped}` });
+    return { ok: true, 新增: created, 已有: existing, 取消过期: cancelled, 跳过: skipped };
   }
   return { ok: false, 错误: '当前云端版本暂不支持该操作' };
 }
