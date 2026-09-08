@@ -66,7 +66,7 @@
     const priCount = stSegs.filter(x => ['S', 'A'].includes(x.分层) && x.未完成动作数 > 0).length;
     const stats = $('#homeStats');
     if (stats) stats.innerHTML = [
-      [`${termDispL(cur)}在读`, s.去重学生 || 0, '人'],
+      [`${termDispL(cur)}在读人次`, s.当期在读 || 0, '人次'],
       ['🔴 S级重点', segCount('S'), '人'],
       ['🟡 A级优先', segCount('A'), '人'],
       ['⏰ 逾期动作', od.length, '条'],
@@ -88,7 +88,7 @@
       } else {
         const pc = $('#homePriorityCard'); if (pc) pc.style.display = '';
         const reasons = x => (x.分层依据 || []).slice(0, 2).map(r => `<span class="muted" style="font-size:11px;">· ${esc(r)}</span>`).join('');
-        pri.innerHTML = `<div style="display:flex;flex-direction:column;gap:8px;">` + items.slice(0, 8).map(x => `
+        const rowHtml = x => `
           <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid ${x.分层 === 'S' ? '#FECACA' : '#FDE68A'};border-radius:8px;background:${x.分层 === 'S' ? '#FEF2F2' : '#FFFBEB'};">
             <b style="min-width:70px;color:${x.分层 === 'S' ? '#DC2626' : '#B45309'};">${segBadge(x.分层)} ${esc(x.stu.姓名)}</b>
             <div style="flex:1;min-width:0;">
@@ -98,29 +98,58 @@
             </div>
             <span class="btn sub sm" data-pri-go="${esc(x.studentId)}">档案</span>
             <span class="btn sub sm" data-pri-flw="${esc(x.studentId)}" data-pri-name="${esc(x.stu.姓名)}">跟进</span>
-          </div>`).join('') + `</div>`;
+          </div>`;
+        const maxShow = 5;
+        // 看板只显示前5条，其余收纳进"本周待办区顶部"的查看全部弹层
+        pri.innerHTML = `<div style="display:flex;flex-direction:column;gap:8px;">` + items.slice(0, maxShow).map(rowHtml).join('') + `</div>
+          ${items.length > maxShow ? `<div style="margin-top:8px;text-align:center;"><span class="btn sub sm" data-pri-all>查看全部优先跟进（${items.length} 人）›</span></div>` : ''}`;
         pri.querySelectorAll('[data-pri-go]').forEach(b => b.onclick = () => { location.hash = 'profile/' + encodeURIComponent(b.dataset.priGo); });
         pri.querySelectorAll('[data-pri-flw]').forEach(b => b.onclick = () => openAddFollowModal(b.dataset.priFlw, b.dataset.priName));
+        const allBtn = pri.querySelector('[data-pri-all]');
+        if (allBtn) allBtn.onclick = () => {
+          dlg('🎯 全部优先跟进对象', `<div style="max-height:60vh;overflow:auto;display:flex;flex-direction:column;gap:8px;">` + items.map(rowHtml).join('') + `</div>`, box => {
+            box.querySelectorAll('[data-pri-go]').forEach(b => b.onclick = () => { dlgClose(); location.hash = 'profile/' + encodeURIComponent(b.dataset.priGo); });
+            box.querySelectorAll('[data-pri-flw]').forEach(b => b.onclick = () => { dlgClose(); openAddFollowModal(b.dataset.priFlw, b.dataset.priName); });
+          });
+        };
       }
     }
 
-    // 今日待办（含逾期，置顶红）
+    // 今日待办（含逾期，按类型筛选 + 限 6 条 + 查看全部弹层）
+    const todoFilter = $('#tdFilter') || {};
+    const tf = todoFilter.value || '';
+    const filterTodos = list => tf ? list.filter(t => (t.类型 || '') === tf) : list;
     const tt = $('#homeTodoToday');
     if (tt) {
-      const list = od.concat(todoToday(today));
-      tt.innerHTML = list.length ? list.map(t => todoItemHtml(t, (t.截止 || '') < today)).join('') : '<div class="note ok">✅ 今日待办已全部清空</div>';
+      const list = filterTodos(od.concat(todoToday(today)));
+      const MAX = 6;
+      tt.innerHTML = list.length ? list.slice(0, MAX).map(t => todoItemHtml(t, (t.截止 || '') < today)).join('') + (list.length > MAX ? `<div style="margin-top:8px;text-align:center;"><span class="btn sub sm" data-todo-all>查看全部今日待办（${list.length} 条）›</span></div>` : '') : '<div class="note ok">✅ 该类型今日待办已清空</div>';
       bindTodoItemEvents(tt);
+      const allBtn = tt.querySelector('[data-todo-all]');
+      if (allBtn) allBtn.onclick = () => openTodoListDlg(filterTodos(od.concat(todoToday(today))));
     }
-    // 本周待办（按天分组）
+    // 本周待办（按天分组，筛选 + 限 6 条 + 查看全部弹层）
     const tw = $('#homeTodoWeek');
     if (tw) {
-      const wk = todoWeek(today);
-      if (!wk.length) { tw.innerHTML = '<div class="note">本周暂无其他待办</div>'; }
+      const allWeek = filterTodos(todoWeek(today));
+      if (!allWeek.length) { tw.innerHTML = '<div class="note">本周暂无该类型待办</div>'; }
       else {
         const byDay = {};
-        wk.forEach(t => { (byDay[t.截止] = byDay[t.截止] || []).push(t); });
-        tw.innerHTML = Object.keys(byDay).sort().map(day => `<div style="margin-bottom:10px;"><div style="font-size:12px;font-weight:700;color:#64748B;margin-bottom:6px;">${esc(day)}</div>${byDay[day].map(t => todoItemHtml(t, false)).join('')}</div>`).join('');
+        allWeek.forEach(t => { (byDay[t.截止] = byDay[t.截止] || []).push(t); });
+        const days = Object.keys(byDay).sort();
+        let shown = 0, stop = false;
+        const html = days.map(day => {
+          if (stop) return '';
+          const items = byDay[day];
+          const take = Math.max(0, MAX - shown);
+          shown += Math.min(take, items.length);
+          if (shown >= MAX) stop = true;
+          return `<div style="margin-bottom:10px;"><div style="font-size:12px;font-weight:700;color:#64748B;margin-bottom:6px;">${esc(day)}</div>${items.slice(stop && items.length > take ? 0 : 0, stop ? take : items.length).map(t => todoItemHtml(t, false)).join('')}</div>`;
+        }).join('');
+        tw.innerHTML = html + (allWeek.length > MAX ? `<div style="margin-top:8px;text-align:center;"><span class="btn sub sm" data-week-all>查看全部本周待办（${allWeek.length} 条）›</span></div>` : '');
         bindTodoItemEvents(tw);
+        const allBtn = tw.querySelector('[data-week-all]');
+        if (allBtn) allBtn.onclick = () => openTodoListDlg(allWeek);
       }
     }
 
@@ -272,9 +301,9 @@
     });
   }
 
-  // ---- 待办：全部清单弹窗 ----
-  function openTodoListDlg() {
-    const all = (st.TODO_LIST || []).slice();
+  // ---- 待办：全部清单弹窗（可选传入预过滤列表）----
+  function openTodoListDlg(preList) {
+    const all = (preList || st.TODO_LIST || []).slice();
     const render = (box) => {
       const pend = all.filter(t => t.状态 === '待办').sort((a, b) => String(a.截止).localeCompare(String(b.截止)));
       const done = all.filter(t => t.状态 !== '待办').slice(0, 30);
@@ -1264,7 +1293,7 @@ function segBadge(lv) {
     $('#qaLeave') && ($('#qaLeave').onclick = () => openLeaveModal());
     $('#qaStu') && ($('#qaStu').onclick = () => addStudentDlg());
     $('#qaFlw') && ($('#qaFlw').onclick = () => openAddFollowModal());
-    $('#todoAllBtn') && ($('#todoAllBtn').onclick = () => openTodoListDlg());
+    $('#tdFilter') && ($('#tdFilter').onchange = renderHome);
     $('#homeWechatBtn') && ($('#homeWechatBtn').onclick = () => openWechatDlg());
     $('#fbBrowseBtn') && ($('#fbBrowseBtn').onclick = () => openFeedbackBrowser());
     $('#fbTeacherBtn') && ($('#fbTeacherBtn').onclick = () => openTeacherFbBoard());
