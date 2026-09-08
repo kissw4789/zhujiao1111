@@ -543,7 +543,7 @@ async function handlePost(p, body, d) {
           eid: stableId('E'), student_id: newId, student_name: it.newName, family_id: m.family_id, phone: m.phone || '',
           class_name: it.newEnroll.class_name, term: TERM, term_name: '2026秋季', grade: it.gradeB || '',
           subject: it.newEnroll.subject || '', campus: it.newEnroll.campus || '', teacher: it.newEnroll.teacher || '',
-          weekday: it.newEnroll.weekday || '', time_range: it.newEnroll.time_range || '',
+          time_range: it.newEnroll.time_range || '', lecture_times: it.newEnroll.time_range || '',
           start_date: it.newEnroll.start_date || today(), end_date: '2027-01-17', source_status: '在班学生',
           assignment_status: '已分配', is_manual: true, active_in_latest: true,
         }, 'eid');
