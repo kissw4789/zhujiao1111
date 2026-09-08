@@ -75,6 +75,7 @@
     return '2026秋';
   };
 
+  let __bootCache = null; // bootstrap 内存缓存：{t: 时间戳, d: 数据}
   const state = Z.state = {
     HOME: null,
     ROSTER: [],
@@ -108,6 +109,9 @@
       err.data = data;
       throw err;
     }
+    // 写操作成功后使云端 bootstrap 缓存失效，保证 refresh 拉到的永远是最新数据
+    const m = (opt.method || 'GET').toUpperCase();
+    if (m !== 'GET' && data && data.ok) __bootCache = null;
     return data;
   };
   const get = path => api(path);
@@ -207,17 +211,28 @@
   };
 
   const loadAllData = async () => {
+    // bootstrap 内存缓存：TTL 12s。写操作成功会通过 api() 失效，保证数据始终最新。
+    const now = Date.now();
+    if (__bootCache && now - __bootCache.t < 12000) {
+      Object.assign(state, __bootCache.d);
+      buildIndices();
+      return state;
+    }
     const b = await get('/api/bootstrap');
-    state.HOME = b && b.home || {};
-    state.ROSTER = b && Array.isArray(b.students) ? b.students : [];
-    state.SCHEDULE = b && Array.isArray(b.classes) ? b.classes : [];
-    state.ENROLL = b && Array.isArray(b.enrollments) ? b.enrollments : [];
-    state.FAMILIES = b && Array.isArray(b.families) ? b.families : [];
-    state.OUTLINES = b && b.outlines && typeof b.outlines === 'object' ? b.outlines : {};
-    state.LEAVES = b && Array.isArray(b.leaves) ? b.leaves : [];
-    state.FOLLOWUPS = b && Array.isArray(b.followups) ? b.followups : [];
-    state.TODO_LIST = b && Array.isArray(b.todoList) ? b.todoList : [];
-    state.FEEDBACK_META = b && Array.isArray(b.feedbackMeta) ? b.feedbackMeta : [];
+    const d = {
+      HOME: b && b.home || {},
+      ROSTER: b && Array.isArray(b.students) ? b.students : [],
+      SCHEDULE: b && Array.isArray(b.classes) ? b.classes : [],
+      ENROLL: b && Array.isArray(b.enrollments) ? b.enrollments : [],
+      FAMILIES: b && Array.isArray(b.families) ? b.families : [],
+      OUTLINES: b && b.outlines && typeof b.outlines === 'object' ? b.outlines : {},
+      LEAVES: b && Array.isArray(b.leaves) ? b.leaves : [],
+      FOLLOWUPS: b && Array.isArray(b.followups) ? b.followups : [],
+      TODO_LIST: b && Array.isArray(b.todoList) ? b.todoList : [],
+      FEEDBACK_META: b && Array.isArray(b.feedbackMeta) ? b.feedbackMeta : [],
+    };
+    Object.assign(state, d);
+    __bootCache = { t: Date.now(), d };
     buildIndices();
     return state;
   };
