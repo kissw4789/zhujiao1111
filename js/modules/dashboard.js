@@ -242,7 +242,7 @@
   async function openWechatDlg() {
     dlg('🔔 微信提醒设置', `
       <div style="font-size:13px;line-height:1.8;color:#334155;">
-        <b>当前机制</b>：每天北京时间 <b>17:00</b> 云端自动检查未办待办，有则推送微信（Vercel Cron）。<br>
+        <b>当前机制</b>：每天北京时间 <b>10:00</b> 与 <b>17:00</b> 云端自动检查未办待办，有则推送微信（Vercel Cron 双推送）。<br>
         <b>开通步骤（一次性）</b>：<br>
         方式A · Server酱（推送到个人微信）：微信搜「Server酱·Turbo」关注 → 扫码登录 sct.ftqq.com → 复制 SendKey → 填到 Vercel 环境变量 <code>SCT_SENDKEY</code>。<br>
         方式B · 企业微信群机器人：群 → 设置 → 群机器人 → 添加 → 复制 Webhook 地址 → 填到 Vercel 环境变量 <code>WECHAT_WEBHOOK</code>。<br>
@@ -720,6 +720,10 @@
             <option>错题答疑</option>
             <option>请假补课</option>
             <option>阶段学情</option>
+            <option>首课反馈</option>
+            <option>拓科跟进</option>
+            <option>续班沟通</option>
+            <option>其他</option>
           </select>
         `)}
         ${FG('关联科目', `

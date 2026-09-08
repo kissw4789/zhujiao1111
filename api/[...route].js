@@ -6,13 +6,27 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 const APP_PASSWORD = process.env.APP_PASSWORD || '661119';
 const SESSION_SECRET = process.env.SESSION_SECRET || 'dev-only-change-me';
 const SESSION_COOKIE = 'zhujiao_session';
-const TERM = '2026秋';
 
 // 服务端运行在 UTC（Vercel），业务时间统一按北京时间展示
 const CN_TZ = 8 * 60 * 60 * 1000;
 const cnNowIso = () => new Date(Date.now() + CN_TZ).toISOString();
 const today = () => cnNowIso().slice(0, 10);
 const nowText = () => cnNowIso().slice(0, 16).replace('T', ' ');
+
+// 当期学期：按北京时间月份自动推导（3-5春 / 6-8暑 / 9-11秋 / 12-2寒），
+// 支持环境变量 TERM_OVERRIDE 强制覆盖（如跨季过渡期需要钉住旧学期）
+function currentTerm() {
+  const ov = String(process.env.TERM_OVERRIDE || '').trim();
+  if (/^\d{4}[春暑秋寒]$/.test(ov)) return ov;
+  const d = new Date(Date.now() + CN_TZ);
+  const y = d.getUTCFullYear();
+  const m = d.getUTCMonth() + 1;
+  if (m >= 3 && m <= 5) return y + '春';
+  if (m >= 6 && m <= 8) return y + '暑';
+  if (m >= 9 && m <= 11) return y + '秋';
+  return y + '寒';
+}
+const TERM = currentTerm();
 
 function sign(value) {
   return crypto.createHmac('sha256', SESSION_SECRET).update(value).digest('base64url');
@@ -507,122 +521,6 @@ async function log(action, detail) {
   await upsert('op_logs', { source_hash: crypto.randomBytes(10).toString('hex'), logged_at: nowText(), action, target: detail && detail.对象 || '', class_name: detail && detail.班级 || '', change: detail && detail.变更 || '', detail: detail || {} }, 'source_hash');
 }
 async function handlePost(p, body, d) {
-  // ===== 【临时运维端点·2026-09-08】双人名档案拆分（老板确认方案后执行，用完即删）=====
-  if (p === '/api/admin/split_merged') {
-    const items = Array.isArray(body.items) ? body.items : [];
-    if (!items.length) return { ok: false, 错误: 'items 为空' };
-    const results = [];
-    for (const it of items) {
-      const m = d.students.find(s => s.id === it.mergedId);
-      if (!m) { results.push({ mergedId: it.mergedId, ok: false, 错误: '合并档不存在' }); continue; }
-      const oldName = m.name;
-      const newId = `C-${it.mergedId}-S`;
-      // 1) A：合并档改名（absorbOnly 模式下跳过改名与新建档）
-      if (!it.absorbOnly) {
-        await patch('students', `id=eq.${encodeURIComponent(it.mergedId)}`, { name: it.keepName });
-      }
-      // 2) B：新建独立档案（同家庭同电话）
-      if (!it.absorbOnly) await upsert('students', {
-        id: newId, family_id: m.family_id, name: it.newName, phone: m.phone || '',
-        gender: it.genderB || '', grade: it.gradeB || '', english_name: '', tags: [], intent: '',
-        note: `2026-09-08 由「${oldName}」拆分独立`, family_order: 2, first_date: m.first_date || '',
-        recent_date: m.recent_date || '', enrollment_count: 0, source_name: m.source_name || '',
-        assignment_confirmed: true, is_manual: true,
-      }, 'id');
-      // 3) 报名归属
-      for (const cls of (it.keepClasses || [])) {
-        await patch('enrollments', `student_id=eq.${encodeURIComponent(it.mergedId)}&class_name=eq.${encodeURIComponent(cls)}`, { student_name: it.keepName });
-      }
-      for (const cls of (it.moveClasses || [])) {
-        await patch('enrollments', `student_id=eq.${encodeURIComponent(it.mergedId)}&class_name=eq.${encodeURIComponent(cls)}`, { student_id: newId, student_name: it.newName });
-      }
-      for (const cls of (it.voidClasses || [])) {
-        await patch('enrollments', `student_id=eq.${encodeURIComponent(it.mergedId)}&class_name=eq.${encodeURIComponent(cls)}`, { is_void: true });
-      }
-      // 4) B 补报名（若指定）
-      if (it.newEnroll && it.newEnroll.class_name) {
-        await upsert('enrollments', {
-          eid: stableId('E'), student_id: newId, student_name: it.newName, family_id: m.family_id, phone: m.phone || '',
-          class_name: it.newEnroll.class_name, term: TERM, term_name: '2026秋季', grade: it.gradeB || '',
-          subject: it.newEnroll.subject || '', campus: it.newEnroll.campus || '', teacher: it.newEnroll.teacher || '',
-          time_range: it.newEnroll.time_range || '', lecture_times: it.newEnroll.time_range || '',
-          start_date: it.newEnroll.start_date || today(), end_date: '2027-01-17', source_status: '在班学生',
-          assignment_status: '已分配', is_manual: true, active_in_latest: true,
-        }, 'eid');
-      }
-      // 5) 反馈归属与正文替换
-      for (const f of (it.feedbacks || [])) {
-        const targetSid = f.sid === 'new' ? newId : it.mergedId;
-        const targetName = f.sid === 'new' ? it.newName : it.keepName;
-        const filter = f.fid ? `fid=eq.${encodeURIComponent(f.fid)}` : `student_id=eq.${encodeURIComponent(it.mergedId)}&class_name=eq.${encodeURIComponent(f.matchClass)}`;
-        await patch('lesson_feedbacks', filter, {
-          student_id: targetSid, student_name: targetName,
-          content: f.content != null ? f.content : undefined,
-          note: f.note != null ? f.note : undefined,
-          class_name: f.classOverride || undefined,
-        });
-      }
-      // 6) 订单归属（按商品名含班级名匹配转移给 B）
-      for (const cls of (it.moveClasses || [])) {
-        await patch('orders', `child_id=eq.${encodeURIComponent(it.mergedId)}&product=like.${encodeURIComponent('*' + cls.split('-').slice(0, 2).join('-') + '*')}`, { child_id: newId, student_name: it.newName });
-      }
-      // 7) 吸收同名单人历史档（absorb: [{fromId, toId}]，历史数据并入在读档后删除历史档）
-      for (const ab of (it.absorb || [])) {
-        const toName = ab.toId === newId ? it.newName : it.keepName;
-        await patch('enrollments', `student_id=eq.${encodeURIComponent(ab.fromId)}`, { student_id: ab.toId, student_name: toName });
-        await patch('orders', `child_id=eq.${encodeURIComponent(ab.fromId)}`, { child_id: ab.toId, student_name: toName });
-        await patch('followups', `student_id=eq.${encodeURIComponent(ab.fromId)}`, { student_id: ab.toId });
-        await patch('lesson_feedbacks', `student_id=eq.${encodeURIComponent(ab.fromId)}`, { student_id: ab.toId, student_name: toName });
-        await sb(`students?id=eq.${encodeURIComponent(ab.fromId)}`, { method: 'DELETE' });
-      }
-      await log('双人名拆分', { 对象: `${oldName} → ${it.keepName} + ${it.newName}`, 变更: `转移班级${(it.moveClasses || []).length}个/作废${(it.voidClasses || []).length}个` });
-      results.push({ mergedId: it.mergedId, ok: true, from: oldName, keep: it.keepName, new: it.newName, newId });
-    }
-    return { ok: true, results };
-  }
-  if (p === '/api/todo/record') {
-    // 1) enrollments：同(学生,班级)重复组中删除 -CLS- 型重复行（保留原始导入行）
-    const g = {};
-    d.enrollments.forEach(e => { const k = (e.student_id || '') + '|' + (e.class_name || ''); (g[k] = g[k] || []).push(e); });
-    const delE = [];
-    Object.values(g).forEach(rows => {
-      if (rows.length < 2) return;
-      const clsRows = rows.filter(r => String(r.eid || '').includes('-CLS-'));
-      const origRows = rows.filter(r => !String(r.eid || '').includes('-CLS-'));
-      if (clsRows.length && origRows.length) delE.push(...clsRows.map(r => r.eid));
-    });
-    // 2) orders：同 order_no 保留 id===order_no 的原始行，删 ORD- 型重复行
-    const g2 = {};
-    d.orders.forEach(o => { (g2[o.order_no] = g2[o.order_no] || []).push(o); });
-    const delO = [];
-    Object.values(g2).forEach(rows => {
-      if (rows.length < 2) return;
-      const keep = rows.find(r => r.id === r.order_no) || rows[0];
-      rows.forEach(r => { if (r.id !== keep.id) delO.push(r.id); });
-    });
-    // 3) first_date 修正：students.first_date 晚于 最早开课/最早订单 时改回最早值
-    const enrMin = {};
-    d.enrollments.forEach(e => { if (e.start_date && e.student_id) { const k = e.student_id; if (!enrMin[k] || e.start_date < enrMin[k]) enrMin[k] = e.start_date; } });
-    const ordMin = {};
-    d.orders.forEach(o => {
-      const d0 = String(o.paid_at || o.ordered_at || '').slice(0, 10);
-      const k = o.child_id || o.source_student_id;
-      if (d0 && k) { if (!ordMin[k] || d0 < ordMin[k]) ordMin[k] = d0; }
-    });
-    const fixes = [];
-    d.students.forEach(s => {
-      const cands = [enrMin[s.id], ordMin[s.id], ordMin[s.source_student_id]].filter(Boolean).sort();
-      if (cands.length && s.first_date && cands[0] < s.first_date) fixes.push({ id: s.id, name: s.name, from: s.first_date, to: cands[0] });
-    });
-    if (body.confirm !== 'YES') {
-      return { ok: true, dry_run: true, will_delete_enrollments: delE.length, will_delete_orders: delO.length, will_fix_first_date: fixes.length, first_sample: fixes.slice(0, 8) };
-    }
-    for (let i = 0; i < delE.length; i += 50) await sb(`enrollments?eid=in.(${delE.slice(i, i + 50).map(encodeURIComponent).join(',')})`, { method: 'DELETE' });
-    for (let i = 0; i < delO.length; i += 50) await sb(`orders?id=in.(${delO.slice(i, i + 50).map(encodeURIComponent).join(',')})`, { method: 'DELETE' });
-    for (const f of fixes) await patch('students', `id=eq.${encodeURIComponent(f.id)}`, { first_date: f.to });
-    await log('数据去重与首次修正', { 对象: `报名删${delE.length}/订单删${delO.length}/首次修${fixes.length}`, 变更: '清理二次导入重复行' });
-    return { ok: true, enrollments_deleted: delE.length, orders_deleted: delO.length, first_fixed: fixes.length, first_list: fixes };
-  }
   // ===== 2026-09-08 助教个人待办 =====
   if (p === '/api/todo/record') {
     if (!body.标题) return { ok: false, 错误: '待办标题必填' };
@@ -737,6 +635,21 @@ async function handlePost(p, body, d) {
   }
   if (p === '/api/enrollment/refund') {
     await patch('enrollments', `eid=eq.${q(body.eid || '')}`, { is_void: true, updated_at: new Date().toISOString() });
+    // 退费退班同步落 leaves 消课台账（与请假同表，便于统一统计折算/消课金额）
+    if (body.studentName || body.studentId) {
+      await upsert('leaves', {
+        lid: stableId('L'),
+        student_id: body.studentId || null,
+        student_name: body.studentName || '',
+        class_name: body.className || '',
+        leave_date: body.日期 || today(),
+        reason: `退费退班：${body.reason || '未填原因'}`,
+        refund_amount: Number(body.amount || 0),
+        note: body.note || '由退费退班联动登记',
+        created_at_text: nowText(),
+        raw: { source: 'refund', ...body },
+      }, 'lid');
+    }
     await log('退费退班', { 对象: body.studentName || body.studentId || '', 班级: body.className || '', 变更: body.reason || '退费退班', reason: body.reason || '', refundAmount: body.amount || '', note: body.note || '' });
     return { ok: true };
   }
@@ -751,8 +664,28 @@ async function handlePost(p, body, d) {
     return { ok: true, id, 姓名: body.姓名 || '' };
   }
   if (p === '/api/student/edit') {
+    const st = d.studentsById[body.id];
+    if (!st) return { ok: false, 错误: '没有这个学员' };
     await patch('students', `id=eq.${q(body.id || '')}`, { name: body.姓名 || '', phone: body.电话 || '', gender: body.性别 || '', grade: body.年级 || '', note: body.备注 || '', updated_at: new Date().toISOString() });
-    await log('编辑学员', { 对象: body.id || '', 变更: body.姓名 || '' });
+    // 联动同步：姓名/电话变化时，同步报名、反馈、家庭表中的冗余姓名/电话，保证全系统同一口径
+    const changed = {};
+    if (body.姓名 && body.姓名 !== st.name) changed.name = body.姓名;
+    if (body.电话 && body.电话 !== (st.phone || '')) changed.phone = body.电话;
+    if (changed.name) {
+      await patch('enrollments', `student_id=eq.${q(body.id)}`, { student_name: changed.name });
+      await patch('lesson_feedbacks', `student_id=eq.${q(body.id)}`, { student_name: changed.name });
+    }
+    if (changed.phone) {
+      await patch('enrollments', `student_id=eq.${q(body.id)}`, { phone: changed.phone });
+      if (st.family_id) {
+        const fam = d.familiesById[st.family_id];
+        if (fam) {
+          await patch('families', `family_id=eq.${q(st.family_id)}`, { phone: changed.phone, source_name: body.姓名 || fam.source_name || '' });
+          await patch('orders', `family_id=eq.${q(st.family_id)}&phone=neq.${q(changed.phone)}`, { phone: changed.phone });
+        }
+      }
+    }
+    await log('编辑学员', { 对象: body.id || '', 变更: body.姓名 || (changed.name ? `改名:${st.name}→${changed.name}` : '') });
     return { ok: true };
   }
   if (p === '/api/enrollment') {
