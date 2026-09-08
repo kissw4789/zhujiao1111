@@ -342,11 +342,13 @@ async function getData() {
     select('todos', 'select=*&order=created_at.desc').catch(() => []),
     select('lesson_feedbacks', 'select=fid,term,lesson,lesson_title,lesson_date,student_id,student_name,class_name,teacher,subject,campus,status&order=class_name.asc').catch(() => []),
   ]);
+  // 转介绍：表未建则降级为空，不影响其余功能
+  const referrals = await select('referrals', 'select=*&order=created_at.desc').catch(() => []);
   const studentsById = Object.fromEntries(students.map(s => [s.id, s]));
   const familiesById = Object.fromEntries(families.map(f => [f.family_id, f]));
   const enrsByStudent = {};
   enrollments.forEach(e => { if (e.student_id) (enrsByStudent[e.student_id] = enrsByStudent[e.student_id] || []).push(e); });
-  return { students, families, enrollments, orders, schedule, outlines, followups, leaves, todos, feedbacks, studentsById, familiesById, enrsByStudent };
+  return { students, families, enrollments, orders, schedule, outlines, followups, leaves, todos, feedbacks, referrals, studentsById, familiesById, enrsByStudent };
 }
 function rosterView(d, now) {
   return d.students.map(st => {
@@ -480,6 +482,27 @@ function mapTodos(d) {
     完成时间: t.done_at_text || '',
   }));
 }
+// ===== 2026-09-08 转介绍跟进 =====
+function mapReferrals(d) {
+  return (d.referrals || []).map(r => ({
+    rid: r.rid,
+    referrer: r.referrer || '',
+    referrerPhone: r.referrer_phone || '',
+    studentName: r.student_name || '',
+    grade: r.grade || '',
+    classType: r.class_type || '',
+    subject: r.subject || '',
+    evalDate: r.eval_date || '',
+    evalScore: r.eval_score || '',
+    trialDate: r.trial_date || '',
+    note: r.note || '',
+    status: r.status || '待测评',
+    studentId: r.student_id || '',
+    remindTid: r.remind_tid || '',
+    creator: r.creator || '助教',
+    createdAt: r.created_at_text || r.created_at || '',
+  }));
+}
 function feedbackMeta(d) {
   const byLesson = {};
   (d.feedbacks || []).forEach(f => {
@@ -513,12 +536,32 @@ function bootstrapData(d, now) {
     leaves: mapLeaves(d),
     followups: mapFollowups(d),
     todoList: mapTodos(d),
+    referrals: mapReferrals(d),
     feedbackMeta: feedbackMeta(d),
     todos: homeData(d, now).今日待办 || [],
   };
 }
 async function log(action, detail) {
   await upsert('op_logs', { source_hash: crypto.randomBytes(10).toString('hex'), logged_at: nowText(), action, target: detail && detail.对象 || '', class_name: detail && detail.班级 || '', change: detail && detail.变更 || '', detail: detail || {} }, 'source_hash');
+}
+// 转介绍提醒：约定日前一天生成一条待办（提醒助教去提醒家长），复用现有提醒链路
+async function linkReferralRemind(body, rid) {
+  const dates = [body.evalDate, body.trialDate].filter(Boolean);
+  if (!dates.length) return '';
+  const targetDate = dates[0];
+  const t = new Date(targetDate + 'T00:00:00');
+  t.setDate(t.getDate() - 1); // 前一天提醒
+  const due = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
+  const kind = dates[0] === body.evalDate && body.evalDate ? '测评' : '试听';
+  const tid = stableId('T');
+  const item = {
+    tid, title: `【转介绍】${body.referrer || ''}介绍 ${body.studentName || ''} · 明天${kind}，记得提醒家长`,
+    kind: '跟进', student_id: body.studentId || null, student_name: body.studentName || '',
+    class_name: '', note: `转介绍提醒（${kind}日 ${targetDate}）`, due_date: due, remind_at: body.remindAt || '17:00',
+    status: '待办', creator: '助教', created_at_text: nowText(), raw: { source: 'referral', rid },
+  };
+  await upsert('todos', item, 'tid');
+  return tid;
 }
 async function handlePost(p, body, d) {
   // ===== 2026-09-08 助教个人待办 =====
@@ -651,6 +694,59 @@ async function handlePost(p, body, d) {
       }, 'lid');
     }
     await log('退费退班', { 对象: body.studentName || body.studentId || '', 班级: body.className || '', 变更: body.reason || '退费退班', reason: body.reason || '', refundAmount: body.amount || '', note: body.note || '' });
+    return { ok: true };
+  }
+  // ===== 2026-09-08 转介绍：新建/更新，报名后归入助教流程 =====
+  if (p === '/api/referral/record') {
+    if (!body.referrer || !body.studentName) return { ok: false, 错误: '介绍家长与新生姓名必填' };
+    const rid = stableId('R');
+    const remindTid = body.remind ? await linkReferralRemind(body, rid) : '';
+    const row = {
+      rid,
+      referrer: body.referrer, referrer_phone: body.referrerPhone || '',
+      student_name: body.studentName, grade: body.grade || '',
+      class_type: body.classType || '', subject: body.subject || '',
+      eval_date: body.evalDate || '', eval_score: body.evalScore || '',
+      trial_date: body.trialDate || '', note: body.note || '',
+      status: body.status || '待测评', student_id: body.studentId || '',
+      remind_tid: remindTid, creator: body.creator || '助教',
+      created_at_text: nowText(), raw: body,
+    };
+    await upsert('referrals', row, 'rid');
+    await log('新增转介绍', { 对象: body.studentName, 变更: `介绍人:${body.referrer} 测评:${body.evalDate || '未定'}` });
+    return { ok: true, item: { rid, 提醒待办: remindTid } };
+  }
+  if (p === '/api/referral/update') {
+    if (!body.rid) return { ok: false, 错误: '缺少转介绍ID' };
+    const fields = {
+      referrer: body.referrer, referrer_phone: body.referrerPhone,
+      student_name: body.studentName, grade: body.grade,
+      class_type: body.classType, subject: body.subject,
+      eval_date: body.evalDate, eval_score: body.evalScore,
+      trial_date: body.trialDate, note: body.note,
+      status: body.status, updated_at: new Date().toISOString(),
+    };
+    Object.keys(fields).forEach(k => { if (fields[k] === undefined) delete fields[k]; });
+    await upsert('referrals', { rid: body.rid, ...fields }, 'rid');
+    // 已报名 → 自动归入助教流程：回填正式学员 id + 在学员档案记一条跟进
+    if (body.status === '已报名' && (body.studentId || body.studentName)) {
+      let sid = body.studentId || '';
+      if (!sid && body.studentName) {
+        const m = d.students.find(s => s.name && body.studentName && s.name.trim() === body.studentName.trim());
+        if (m) sid = m.id;
+      }
+      if (sid) {
+        await upsert('referrals', { rid: body.rid, status: '已报名', student_id: sid }, 'rid');
+        await upsert('followups', {
+          id: crypto.randomUUID(), student_id: sid, kind: '续班沟通',
+          status: '续班沟通', note: `【转介绍已报名】由 ${body.referrer || '介绍家长'} 转介绍，新生已报名，回到助教日常流程`,
+          created_at: new Date().toISOString(),
+          raw: { subject: '全科', creator: '助教', source: 'referral', rid: body.rid },
+        }, 'id');
+        await log('转介绍报名', { 对象: body.studentName || sid, 变更: `介绍人:${body.referrer || ''} 已报名归入助教流程` });
+      }
+    }
+    await log('更新转介绍', { 对象: body.studentName || body.rid, 变更: `状态:${body.status || ''}` });
     return { ok: true };
   }
   if (p === '/api/student') {
@@ -787,6 +883,7 @@ module.exports = async (req, res) => {
       return send(res, 200, { ok: true, list });
     }
     if (p === '/api/leave/list') return send(res, 200, { ok: true, leaves: mapLeaves(d) });
+    if (p === '/api/referral/list') return send(res, 200, { ok: true, referrals: mapReferrals(d).filter(r => r.status !== '已报名' || r.studentId) });
     // ===== 2026-09-08 讲次学情反馈查询（含正文，按学员/班级/讲次过滤）=====
     if (p === '/api/feedback/list') {
       let rows = await select('lesson_feedbacks', 'select=*&order=class_name.asc').catch(() => null);

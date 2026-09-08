@@ -88,6 +88,7 @@
     FOLLOWUPS: [],
     TODO_LIST: [],
     FEEDBACK_META: [],
+    REFERRALS: [],
     LOGIN_OK: false,
     currentPage: 'home',
     filters: {
@@ -230,6 +231,7 @@
       FOLLOWUPS: b && Array.isArray(b.followups) ? b.followups : [],
       TODO_LIST: b && Array.isArray(b.todoList) ? b.todoList : [],
       FEEDBACK_META: b && Array.isArray(b.feedbackMeta) ? b.feedbackMeta : [],
+      REFERRALS: b && Array.isArray(b.referrals) ? b.referrals : [],
     };
     Object.assign(state, d);
     __bootCache = { t: Date.now(), d };

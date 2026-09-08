@@ -713,6 +713,116 @@
   }
 
   // ======================
+  // 转介绍管理模块（学员转介绍 → 助教沟通）
+  // ======================
+  function refState() { return st.REFERRALS || []; }
+  function refBadge(s) {
+    const map = { '待测评': 'gold', '已测评待试听': 'blue', '待报名': 'purple', '已报名': 'free', '已流失': 'gray' };
+    return `<span class="badge ${map[s] || 'gray'}">${esc(s || '待测评')}</span>`;
+  }
+  function renderReferralPage() {
+    const kw = ($('#refKw') || {}).value ? $('#refKw').value.trim().toLowerCase() : '';
+    const sf = ($('#refStatus') || {}).value || '';
+    let rows = refState().slice().sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+    if (sf) rows = rows.filter(r => r.status === sf);
+    if (kw) rows = rows.filter(r => (r.referrer || '').toLowerCase().includes(kw) || (r.studentName || '').toLowerCase().includes(kw));
+    const notLost = rows.filter(r => r.status !== '已流失');
+    const stats = $('#refStats'); if (stats) stats.innerHTML = [
+      ['进行中', notLost.length, '条'], ['待测评', rows.filter(r => r.status === '待测评').length, '条'],
+      ['已测评待试听', rows.filter(r => r.status === '已测评待试听').length, '条'], ['已报名', refState().filter(r => r.status === '已报名').length, '人'],
+    ].map(x => `<div class="kpi-card"><div class="kpi-k">${x[0]}</div><div class="kpi-v">${x[1]}<span>${x[2]}</span></div></div>`).join('');
+    const box = $('#refTable'); if (!box) return;
+    box.innerHTML = rows.length ? `<table><tr><th>新生姓名</th><th>介绍家长</th><th>年级/班型/学科</th><th>测评日期</th><th>测评分数</th><th>试听日期</th><th>状态</th><th>操作</th></tr>${rows.map(r => `<tr>
+      <td class="tk"><b>${esc(r.studentName)}</b>${r.note ? `<div class="muted" style="font-size:11px;">${esc(r.note)}</div>` : ''}</td>
+      <td>${esc(r.referrer)}${r.referrerPhone ? `<div class="muted" style="font-size:11px;">${esc(r.referrerPhone)}</div>` : ''}</td>
+      <td class="muted">${esc(r.grade || '—')} · ${esc(r.classType || '—')} · ${esc(r.subject || '—')}</td>
+      <td>${esc(r.evalDate || '—')}</td>
+      <td>${r.evalScore ? `<b style="color:#2563EB;">${esc(r.evalScore)}</b>` : '—'}</td>
+      <td>${esc(r.trialDate || '—')}</td>
+      <td>${refBadge(r.status)}${r.remindTid ? `<div class="muted" style="font-size:11px;">🔔 已设提醒</div>` : ''}</td>
+      <td style="display:flex;gap:6px;flex-wrap:wrap;"><span class="btn sub sm" data-ref-edit="${esc(r.rid)}">编辑</span><span class="btn sub sm" data-ref-next="${esc(r.rid)}">流转 ↓</span>${r.status === '已报名' && r.studentId ? `<span class="btn sm" data-ref-go="${esc(r.studentId)}" style="background:#059669;color:#fff;">进档案 →</span>` : ''}</td>
+    </tr>`).join('')}</table>` : '<div class="note">暂无转介绍记录</div>';
+    box.querySelectorAll('[data-ref-edit]').forEach(b => b.onclick = () => openReferralDlg(refState().find(r => r.rid === b.dataset.refEdit)));
+    box.querySelectorAll('[data-ref-next]').forEach(b => b.onclick = () => openReferralNextDlg(refState().find(r => r.rid === b.dataset.refNext)));
+    box.querySelectorAll('[data-ref-go]').forEach(b => b.onclick = () => { location.hash = 'profile/' + encodeURIComponent(b.dataset.refGo); });
+  }
+  const REF_NEXT = { '待测评': ['已测评待试听', '已流失'], '已测评待试听': ['待报名', '已流失'], '待报名': ['已报名', '已流失'] };
+  function openReferralNextDlg(r) {
+    if (!r) return;
+    const opts = REF_NEXT[r.status] || [];
+    if (!opts.length) { dlg('状态流转', `<div class="note">当前状态「${esc(r.status)}」无需流转</div>`, () => {}); return; }
+    dlg(`流转状态 · ${esc(r.studentName)}`, `<div style="margin-bottom:12px;font-size:13px;">当前：${refBadge(r.status)}<div class="muted" style="margin-top:4px;">选择下一状态：</div></div>${opts.map(s => `<div style="margin:6px 0;"><span class="btn" data-next="${esc(s)}">→ ${esc(s)}</span></div>`).join('')}${dlgFoot('关闭')}`, box => {
+      box.querySelector('#dlgCancel').onclick = dlgClose;
+      box.querySelector('#dlgOk').onclick = dlgClose;
+      box.querySelectorAll('[data-next]').forEach(b => b.onclick = async () => {
+        const stt = b.dataset.next;
+        const extra = {};
+        if (stt === '已测评待试听' && !r.evalScore) {
+          const score = prompt('测评分数是多少？（可跳过直接点确定）', '');
+          if (score !== null) extra.evalScore = score.trim();
+        }
+        if (stt === '已报名') {
+          const sid = prompt('已报名：请填该生在系统内的学员ID（若已新增学员可在花名册看 ID）；直接点确定则仅标记报名', r.studentId || '');
+          if (sid !== null) extra.studentId = sid.trim();
+        }
+        const body = { rid: r.rid, status: stt, evalScore: extra.evalScore || r.evalScore, studentId: extra.studentId || r.studentId, studentName: r.studentName, referrer: r.referrer };
+        const res = await api.post('/api/referral/update', body);
+        if (!res.ok) return dlgErr(res.错误 || '操作失败');
+        dlgClose(); toast(`已流转为「${stt}」`);
+        await Z.bootstrap.loadAllData(); renderReferralPage();
+      });
+    });
+  }
+  function openReferralDlg(r = null) {
+    const isNew = !r;
+    dlg(isNew ? '＋ 新增转介绍' : '编辑转介绍 · ' + (r.studentName || ''), `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        ${FG('介绍家长 <b style="color:#B91C1C">*</b>', `<input id="rf-referrer" value="${esc(r ? r.referrer : '')}" placeholder="例：张三妈妈">`)}
+        ${FG('介绍家长电话', `<input id="rf-referrerPhone" value="${esc(r ? r.referrerPhone : '')}">`)}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        ${FG('新生姓名 <b style="color:#B91C1C">*</b>', `<input id="rf-stuName" value="${esc(r ? r.studentName : '')}">`)}
+        ${FG('年级', `<select id="rf-grade"><option value=""></option>${GRADES.map(g => `<option${r && r.grade === g ? ' selected' : ''}>${g}</option>`).join('')}</select>`)}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        ${FG('班型', `<select id="rf-classType"><option value=""></option><option${r && r.classType === '创新班' ? ' selected' : ''}>创新班</option><option${r && r.classType === '尖子班' ? ' selected' : ''}>尖子班</option></select>`)}
+        ${FG('学科', `<select id="rf-subject"><option value=""></option><option${r && r.subject === '数学' ? ' selected' : ''}>数学</option><option${r && r.subject === '物理' ? ' selected' : ''}>物理</option></select>`)}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        ${FG('约定测评日期', `<input id="rf-evalDate" type="date" value="${esc(r ? r.evalDate : '')}">`)}
+        ${FG('试听课日期', `<input id="rf-trialDate" type="date" value="${esc(r ? r.trialDate : '')}">`)}
+      </div>
+      ${isNew ? `${FG('评价分数（测评后填，可稍后补）', '<input id="rf-evalScore" placeholder="例：85">')}` : ''}
+      ${FG('助教备注', `<input id="rf-note" value="${esc(r ? r.note : '')}" placeholder="阶段/沟通要点等">`)}
+      ${dlgFoot(isNew ? '保存并生成提醒' : '保存')}
+    `, box => {
+      box.querySelector('#dlgCancel').onclick = dlgClose;
+      box.querySelector('#dlgOk').onclick = async () => {
+        const body = {
+          referrer: box.querySelector('#rf-referrer').value.trim(), referrerPhone: box.querySelector('#rf-referrerPhone').value.trim(),
+          studentName: box.querySelector('#rf-stuName').value.trim(), grade: box.querySelector('#rf-grade').value,
+          classType: box.querySelector('#rf-classType').value, subject: box.querySelector('#rf-subject').value,
+          evalDate: box.querySelector('#rf-evalDate').value, trialDate: box.querySelector('#rf-trialDate').value,
+          evalScore: box.querySelector('#rf-evalScore') ? box.querySelector('#rf-evalScore').value.trim() : (r ? r.evalScore : ''),
+          note: box.querySelector('#rf-note').value.trim(),
+        };
+        if (!body.referrer) return dlgErr('请填写介绍家长');
+        if (!body.studentName) return dlgErr('请填写新生姓名');
+        if (isNew) {
+          const res = await api.post('/api/referral/record', body);
+          if (!res.ok) return dlgErr(res.错误 || '保存失败');
+          dlgClose(); toast('已保存转介绍，提醒待办已生成（约定日前一天）');
+        } else {
+          const res = await api.post('/api/referral/update', { rid: r.rid, ...body, status: r.status });
+          if (!res.ok) return dlgErr(res.错误 || '保存失败');
+          dlgClose(); toast('已保存');
+        }
+        await Z.bootstrap.loadAllData(); renderReferralPage();
+      };
+    });
+  }
+
+  // ======================
   // 学情与日常跟进模块
   // ======================
   async function loadFollowups() {
@@ -1046,6 +1156,10 @@
     $('#flwAddQuickBtn') && ($('#flwAddQuickBtn').onclick = () => openAddFollowModal());
     $('#flwType') && ($('#flwType').onchange = renderFollowupPage);
     $('#flwKw') && ($('#flwKw').oninput = renderFollowupPage);
+    // ===== 2026-09-08 转介绍管理 =====
+    $('#refAddBtn') && ($('#refAddBtn').onclick = () => openReferralDlg());
+    $('#refStatus') && ($('#refStatus').onchange = renderReferralPage);
+    $('#refKw') && ($('#refKw').oninput = renderReferralPage);
     // ===== 2026-09-08 工作台快捷操作与提醒 =====
     $('#qaTodo') && ($('#qaTodo').onclick = () => openTodoDlg());
     $('#qaLeave') && ($('#qaLeave').onclick = () => openLeaveModal());
@@ -1065,13 +1179,14 @@
     fillStuFilters(); fillSchFilters();
     const stuData = $('#stuData'); if (stuData) stuData.innerHTML = st.ROSTER.map(a => `<option value="${esc(a.id)}">${esc(a.姓名)}（${esc(a.年级 || '')} · ${esc(a.电话 || '')}）</option>`).join('');
     const classData = $('#classData'); if (classData) classData.innerHTML = [...new Set(st.ENROLL.map(x => x.班级).concat(st.SCHEDULE.map(x => x.班级 || x.课程)))].filter(Boolean).sort().map(c => `<option value="${esc(c)}">`).join('');
-    renderHome(); renderStudents(); renderSchedule(); renderLeavePage(); renderOutlines(); fillMatrixFilters(); renderScheduleMatrix(); loadFollowups();
+    renderHome(); renderStudents(); renderSchedule(); renderLeavePage(); renderOutlines(); fillMatrixFilters(); renderScheduleMatrix(); loadFollowups(); renderReferralPage();
     const stuNameData = $('#stuNameData'); if (stuNameData) stuNameData.innerHTML = st.ROSTER.map(a => `<option value="${esc(a.姓名)}">`).join('');
     setTimeout(checkTodoReminder, 1200);
   }
   function onPage(id) {
     if (id === 'leave') loadLeaves();
     if (id === 'flw') loadFollowups();
+    if (id === 'ref') renderReferralPage();
     if (id === 'oln') renderOutlineDetail();
   }
 

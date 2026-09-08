@@ -329,6 +329,31 @@ create table if not exists todos (
 );
 create index if not exists todos_status_due_idx on todos(status, due_date);
 
+-- ============ 2026-09-08 新增：转介绍跟进（学员转介绍由助教沟通） ============
+create table if not exists referrals (
+  rid text primary key,                -- 例：R-xxx
+  referrer text not null,              -- 介绍家长（哪位家长介绍的）
+  referrer_phone text,                 -- 介绍家长电话（选填）
+  student_name text,                   -- 新生姓名
+  grade text,                          -- 学员年级
+  class_type text,                     -- 班型：创新班/尖子班
+  subject text,                        -- 学科：数学/物理
+  eval_date text,                      -- 约定的测评日期 YYYY-MM-DD
+  eval_score text,                     -- 测评分数（测评后填写）
+  trial_date text,                     -- 试听课日期 YYYY-MM-DD（如需试听）
+  note text,                           -- 助教备注
+  status text not null default '待测评', -- 待测评/已测评待试听/待报名/已报名/已流失
+  student_id text,                     -- 报名后回填正式学员 id（回到助教流程）
+  remind_tid text,                     -- 关联的提醒待办 tid（选填）
+  creator text default '助教',
+  created_at_text text,
+  updated_at timestamptz not null default now(),
+  created_at timestamptz not null default now()
+);
+create index if not exists referrals_status_idx on referrals(status);
+create index if not exists referrals_rid_idx on referrals(rid);
+create index if not exists referrals_student_id_idx on referrals(student_id);
+
 alter table import_batches enable row level security;
 alter table raw_roster_rows enable row level security;
 alter table families enable row level security;
@@ -345,3 +370,4 @@ alter table family_assignment_rules enable row level security;
 alter table op_logs enable row level security;
 alter table lesson_feedbacks enable row level security;
 alter table todos enable row level security;
+alter table referrals enable row level security;
