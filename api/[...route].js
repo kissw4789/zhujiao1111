@@ -517,10 +517,12 @@ async function handlePost(p, body, d) {
       if (!m) { results.push({ mergedId: it.mergedId, ok: false, 错误: '合并档不存在' }); continue; }
       const oldName = m.name;
       const newId = `C-${it.mergedId}-S`;
-      // 1) A：合并档改名
-      await patch('students', `id=eq.${encodeURIComponent(it.mergedId)}`, { name: it.keepName });
+      // 1) A：合并档改名（absorbOnly 模式下跳过改名与新建档）
+      if (!it.absorbOnly) {
+        await patch('students', `id=eq.${encodeURIComponent(it.mergedId)}`, { name: it.keepName });
+      }
       // 2) B：新建独立档案（同家庭同电话）
-      await upsert('students', {
+      if (!it.absorbOnly) await upsert('students', {
         id: newId, family_id: m.family_id, name: it.newName, phone: m.phone || '',
         gender: it.genderB || '', grade: it.gradeB || '', english_name: '', tags: [], intent: '',
         note: `2026-09-08 由「${oldName}」拆分独立`, family_order: 2, first_date: m.first_date || '',
@@ -563,6 +565,15 @@ async function handlePost(p, body, d) {
       // 6) 订单归属（按商品名含班级名匹配转移给 B）
       for (const cls of (it.moveClasses || [])) {
         await patch('orders', `child_id=eq.${encodeURIComponent(it.mergedId)}&product=like.${encodeURIComponent('*' + cls.split('-').slice(0, 2).join('-') + '*')}`, { child_id: newId, student_name: it.newName });
+      }
+      // 7) 吸收同名单人历史档（absorb: [{fromId, toId}]，历史数据并入在读档后删除历史档）
+      for (const ab of (it.absorb || [])) {
+        const toName = ab.toId === newId ? it.newName : it.keepName;
+        await patch('enrollments', `student_id=eq.${encodeURIComponent(ab.fromId)}`, { student_id: ab.toId, student_name: toName });
+        await patch('orders', `child_id=eq.${encodeURIComponent(ab.fromId)}`, { child_id: ab.toId, student_name: toName });
+        await patch('followups', `student_id=eq.${encodeURIComponent(ab.fromId)}`, { student_id: ab.toId });
+        await patch('lesson_feedbacks', `student_id=eq.${encodeURIComponent(ab.fromId)}`, { student_id: ab.toId, student_name: toName });
+        await sb(`students?id=eq.${encodeURIComponent(ab.fromId)}`, { method: 'DELETE' });
       }
       await log('双人名拆分', { 对象: `${oldName} → ${it.keepName} + ${it.newName}`, 变更: `转移班级${(it.moveClasses || []).length}个/作废${(it.voidClasses || []).length}个` });
       results.push({ mergedId: it.mergedId, ok: true, from: oldName, keep: it.keepName, new: it.newName, newId });
