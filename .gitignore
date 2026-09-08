@@ -12,3 +12,4 @@ data/*.json
 data/2026秋*
 data/缺漏*
 data/raw_*
+data/*.md
