@@ -935,6 +935,58 @@ async function handlePost(p, body, d) {
     await log(body.作废 ? '作废报名' : '恢复报名', { 对象: body.eid || '' });
     return { ok: true };
   }
+  // ===== 学员分层：保存/清除人工覆盖 =====
+  if (p === '/api/student/segment') {
+    if (!body.studentId) return { ok: false, 错误: '缺少 studentId' };
+    const st = d.studentsById[body.studentId];
+    if (!st) return { ok: false, 错误: '没有这个学员' };
+    if (body.clear) {
+      await patch('students', `id=eq.${q(body.studentId)}`, { segment_code: null, risk_level: null, risk_tags: '[]', segment_note: null, segment_updated_at: new Date().toISOString() });
+      await log('清除分层覆盖', { 对象: st.name || body.studentId });
+      const now = today();
+      const seg = segmentStudent({ ...st, segment_code: '' }, d, now);
+      return { ok: true, 人工覆盖: false, 分层: seg.分层, ...seg };
+    }
+    await patch('students', `id=eq.${q(body.studentId)}`, {
+      segment_code: body.segmentCode || null,
+      risk_level: body.riskLevel || null,
+      risk_tags: JSON.stringify(body.riskTags || []),
+      segment_note: body.note || null,
+      segment_updated_at: new Date().toISOString(),
+    });
+    await log('保存分层覆盖', { 对象: st.name || body.studentId, 变更: `层级→${body.segmentCode || '跟随系统'}` });
+    const now = today();
+    const seg = segmentStudent({ ...st, segment_code: body.segmentCode || '' }, d, now);
+    return { ok: true, 人工覆盖: true, 分层: seg.分层, ...seg };
+  }
+  // ===== 系统动作同步：将分层计算的待办落库（source_key 去重） =====
+  if (p === '/api/segmentation/actions/sync') {
+    let created = 0, existing = 0, skipped = 0;
+    const now = today();
+    for (const st of d.students) {
+      const seg = segmentStudent(st, d, now);
+      const actions = segmentationActions(st, seg, d);
+      for (const act of actions) {
+        // source_key 去重：已完成/已取消/已存在的同 key 待办不重复创建
+        const exists = d.todos.some(t => t.source_key === act.sourceKey || (t.raw && t.raw.source_key === act.sourceKey));
+        if (exists) { existing++; continue; }
+        // 跳过无 studentId 的动作
+        if (!st.id) { skipped++; continue; }
+        const item = {
+          tid: stableId('T'), title: act.title, kind: '跟进',
+          student_id: st.id, student_name: st.name || '',
+          class_name: '', note: act.rule,
+          due_date: act.due, remind_at: '17:00', status: '待办',
+          source_key: act.sourceKey, creator: '助教',
+          created_at_text: nowText(), raw: { source: 'segmentation', rule: act.rule, source_key: act.sourceKey },
+        };
+        await upsert('todos', item, 'tid').catch(() => { skipped++; });
+        created++;
+      }
+    }
+    await log('同步分层动作', { 对象: '全部', 变更: `新增${created} 已有${existing} 跳过${skipped}` });
+    return { ok: true, 新增: created, 已有: existing, 跳过: skipped };
+  }
   return { ok: false, 错误: '当前云端版本暂不支持该操作' };
 }
 async function createEnrollment(studentId, familyId, st, body) {
@@ -1041,7 +1093,8 @@ module.exports = async (req, res) => {
       const fam = d.familiesById[st.family_id];
       const kids = d.students.filter(s => s.family_id === st.family_id && s.id !== st.id).map(cnStudent);
       const validOrders = orders.filter(o => o.有效订单);
-      return send(res, 200, { 基本: { ...cnStudent(st), 状态: studentStatus(d.enrsByStudent[st.id] || [], now) }, 报名: es, 订单: orders, 有效订单: validOrders, 累计缴费: Math.round(validOrders.reduce((a, b) => a + Number(b.金额 || 0), 0)), 家庭: fam ? cnFamily(fam, d.students.filter(s => s.family_id === fam.family_id)) : null, 同家庭: kids });
+      const seg = segmentStudent(st, d, now);
+	      return send(res, 200, { 基本: { ...cnStudent(st), 状态: studentStatus(d.enrsByStudent[st.id] || [], now) }, ...seg, 动作: segmentationActions(st, seg, d), 报名: es, 订单: orders, 有效订单: validOrders, 累计缴费: Math.round(validOrders.reduce((a, b) => a + Number(b.金额 || 0), 0)), 家庭: fam ? cnFamily(fam, d.students.filter(s => s.family_id === fam.family_id)) : null, 同家庭: kids });
     }
     if (p === '/api/family') {
       const fam = d.familiesById[u.query.id];
