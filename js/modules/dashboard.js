@@ -878,16 +878,21 @@ function segBadge(lv) {
   function renderFollowupPage() {
     const kw = ($('#flwKw') || {}).value ? $('#flwKw').value.trim().toLowerCase() : '';
     const typeFilter = ($('#flwType') || {}).value || '';
+    const segFilter = ($('#flwSeg') || {}).value || '';
+    // 学员→层级映射（用于筛选与展示）
+    const segById = {};
+    (st.SEGMENTATION || []).forEach(x => { segById[x.studentId] = x.分层 || ''; });
     let list = (st.FOLLOWUPS || []).slice();
     list.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
     if (typeFilter) list = list.filter(item => item.type === typeFilter);
+    if (segFilter) list = list.filter(item => segById[item.studentId] === segFilter);
     if (kw) list = list.filter(item => (item.studentName || '').toLowerCase().includes(kw) || (item.phone || '').includes(kw) || (item.content || '').toLowerCase().includes(kw));
 
     const stats = $('#flwStats');
     if (stats) stats.innerHTML = [
       ['累计跟进沟通', (st.FOLLOWUPS || []).length, '次'],
-      ['覆盖学员数', new Set((st.FOLLOWUPS || []).map(f => f.studentId)).size, '人'],
-      ['家长沟通记录', (st.FOLLOWUPS || []).filter(f => f.type === '家长沟通').length, '条'],
+      ['S级学员数', (st.SEGMENTATION || []).filter(x => x.分层 === 'S').length, '人'],
+      ['A级学员数', (st.SEGMENTATION || []).filter(x => x.分层 === 'A').length, '人'],
       ['课堂与学情反馈', (st.FOLLOWUPS || []).filter(f => f.type.includes('学情') || f.type.includes('课堂') || f.type.includes('答疑')).length, '条']
     ].map(x => `<div class="kpi-card"><div class="kpi-k">${x[0]}</div><div class="kpi-v">${x[1]}<span>${x[2]}</span></div></div>`).join('');
 
@@ -895,10 +900,11 @@ function segBadge(lv) {
     if (!box) return;
     const pg = st.PG.flw || { page: 1, size: 20 };
     const slice = list.slice((pg.page - 1) * pg.size, pg.page * pg.size);
-    box.innerHTML = slice.length ? `<table><tr><th>时间</th><th>学员姓名</th><th>联系电话</th><th>类型</th><th>科目</th><th>沟通要点摘要</th><th>记录人</th><th>操作</th></tr>` + slice.map(r => `
+    box.innerHTML = slice.length ? `<table><tr><th>时间</th><th>学员姓名</th><th>层级</th><th>联系电话</th><th>类型</th><th>科目</th><th>沟通要点摘要</th><th>记录人</th><th>操作</th></tr>` + slice.map(r => `
       <tr>
         <td class="muted">${esc(r.createdAt ? r.createdAt.slice(0, 16).replace('T', ' ') : '—')}</td>
         <td class="tk"><b>${esc(r.studentName || '—')}</b></td>
+        <td>${segBadge(segById[r.studentId])}</td>
         <td class="muted">${esc(r.phone || '—')}</td>
         <td><span class="badge blue">${esc(r.type || '日常沟通')}</span></td>
         <td><span class="badge ${r.subject === '物理' ? 'c-wuli' : 'c-zhong'}">${esc(r.subject || '全科')}</span></td>
@@ -1241,6 +1247,7 @@ function segBadge(lv) {
     $('#schMatrixDay') && ($('#schMatrixDay').onchange = renderScheduleMatrix);
     $('#flwAddQuickBtn') && ($('#flwAddQuickBtn').onclick = () => openAddFollowModal());
     $('#flwType') && ($('#flwType').onchange = renderFollowupPage);
+    $('#flwSeg') && ($('#flwSeg').onchange = renderFollowupPage);
     $('#flwKw') && ($('#flwKw').oninput = renderFollowupPage);
     // ===== 2026-09-08 转介绍管理 =====
     $('#refAddBtn') && ($('#refAddBtn').onclick = () => openReferralDlg());
