@@ -959,30 +959,34 @@ async function handlePost(p, body, d) {
     const seg = segmentStudent({ ...st, segment_code: body.segmentCode || '' }, d, now);
     return { ok: true, 人工覆盖: true, 分层: seg.分层, ...seg };
   }
-  // ===== 系统动作同步：将分层计算的待办落库（source_key 去重） =====
+  // ===== 系统动作同步：将分层计算的待办落库（source_key 去重,批量upsert,每批≤50）=====
   if (p === '/api/segmentation/actions/sync') {
     let created = 0, existing = 0, skipped = 0;
-    const now = today();
+    const nowTime = today();
+    // 一次搜集所有已有 seg source_key 用于去重
+    const existingKeys = new Set((d.todos || []).map(t => t.source_key || (t.raw && t.raw.source_key)).filter(Boolean));
+    const batch = [];
     for (const st of d.students) {
-      const seg = segmentStudent(st, d, now);
+      const seg = segmentStudent(st, d, nowTime);
       const actions = segmentationActions(st, seg, d);
       for (const act of actions) {
-        // source_key 去重：已完成/已取消/已存在的同 key 待办不重复创建
-        const exists = d.todos.some(t => t.source_key === act.sourceKey || (t.raw && t.raw.source_key === act.sourceKey));
-        if (exists) { existing++; continue; }
-        // 跳过无 studentId 的动作
+        if (existingKeys.has(act.sourceKey)) { existing++; continue; }
         if (!st.id) { skipped++; continue; }
-        const item = {
+        batch.push({
           tid: stableId('T'), title: act.title, kind: '跟进',
           student_id: st.id, student_name: st.name || '',
           class_name: '', note: act.rule,
           due_date: act.due, remind_at: '17:00', status: '待办',
           source_key: act.sourceKey, creator: '助教',
           created_at_text: nowText(), raw: { source: 'segmentation', rule: act.rule, source_key: act.sourceKey },
-        };
-        await upsert('todos', item, 'tid').catch(() => { skipped++; });
+        });
+        existingKeys.add(act.sourceKey);
         created++;
       }
+    }
+    // 批量 upsert 写入，每批 ≤50（踩坑#7：大数据量必须分批）
+    for (let i = 0; i < batch.length; i += 50) {
+      await upsert('todos', batch.slice(i, i + 50), 'tid').catch(() => { skipped += Math.min(50, batch.length - i); });
     }
     await log('同步分层动作', { 对象: '全部', 变更: `新增${created} 已有${existing} 跳过${skipped}` });
     return { ok: true, 新增: created, 已有: existing, 跳过: skipped };
