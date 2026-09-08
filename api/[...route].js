@@ -140,6 +140,9 @@ async function upsert(table, rows, conflict) {
 async function patch(table, filter, body) {
   return await sb(`${table}?${filter}`, { method: 'PATCH', body: JSON.stringify(body) });
 }
+async function remove(table, filter) {
+  return await sb(`${table}?${filter}`, { method: 'DELETE' });
+}
 
 function cnStudent(s) {
   return {
@@ -769,6 +772,17 @@ async function handlePost(p, body, d) {
     await log('更新转介绍', { 对象: body.studentName || body.rid, 变更: `状态:${body.status || ''}` });
     return { ok: true };
   }
+  if (p === '/api/referral/delete') {
+    if (!body.rid) return { ok: false, 错误: '缺少转介绍ID' };
+    const target = (d.referrals || []).find(r => r.rid === body.rid);
+    // 连带删除该转介绍的提醒待办（若有）
+    if (target && target.remind_tid) {
+      await remove('todos', `tid=eq.${q(target.remind_tid)}`).catch(() => {});
+    }
+    await remove('referrals', `rid=eq.${q(body.rid)}`);
+    await log('删除转介绍', { 对象: (target && target.student_name) || body.rid, 变更: '删除转介绍记录' });
+    return { ok: true };
+  }
   if (p === '/api/student') {
     const id = stableId('S');
     const familyId = body.familyId || stableId('F');
@@ -903,7 +917,7 @@ module.exports = async (req, res) => {
       return send(res, 200, { ok: true, list });
     }
     if (p === '/api/leave/list') return send(res, 200, { ok: true, leaves: mapLeaves(d) });
-    if (p === '/api/referral/list') return send(res, 200, { ok: true, referrals: mapReferrals(d).filter(r => r.status !== '已报名' || r.studentId) });
+    if (p === '/api/referral/list') return send(res, 200, { ok: true, referrals: mapReferrals(d) });
     // ===== 2026-09-08 讲次学情反馈查询（含正文，按学员/班级/讲次过滤）=====
     if (p === '/api/feedback/list') {
       let rows = await select('lesson_feedbacks', 'select=*&order=class_name.asc').catch(() => null);
