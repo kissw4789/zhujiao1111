@@ -544,24 +544,43 @@ function bootstrapData(d, now) {
 async function log(action, detail) {
   await upsert('op_logs', { source_hash: crypto.randomBytes(10).toString('hex'), logged_at: nowText(), action, target: detail && detail.对象 || '', class_name: detail && detail.班级 || '', change: detail && detail.变更 || '', detail: detail || {} }, 'source_hash');
 }
-// 转介绍提醒：约定日前一天生成一条待办（提醒助教去提醒家长），复用现有提醒链路
+// 转介绍提醒:生成一条待办提醒助教。分两种情况——
+// ① 已约测评/试听日期:在"约定日前一天"提醒(如周六测评→周五提醒)
+// ② 尚未约定:在"本周五"提醒去约家长(测评基本安排在周末,周五必须联系家长敲定)
+// 返回 { tid, remindNote } 供落库
 async function linkReferralRemind(body, rid) {
-  const dates = [body.evalDate, body.trialDate].filter(Boolean);
-  if (!dates.length) return '';
-  const targetDate = dates[0];
-  const t = new Date(targetDate + 'T00:00:00');
-  t.setDate(t.getDate() - 1); // 前一天提醒
-  const due = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
-  const kind = dates[0] === body.evalDate && body.evalDate ? '测评' : '试听';
+  const evalDate = body.evalDate || '';
+  const trialDate = body.trialDate || '';
+  const dates = [evalDate, trialDate].filter(Boolean);
+  let due, kind, note, targetDate;
+  if (dates.length) {
+    targetDate = dates[0];
+    const t = new Date(targetDate + 'T00:00:00');
+    t.setDate(t.getDate() - 1); // 约定日前一天提醒
+    due = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
+    kind = dates[0] === evalDate && evalDate ? '测评' : '试听';
+    note = `转介绍提醒(${kind}日 ${targetDate}),记得提醒家长`;
+  } else {
+    // 未约:本周五提醒去约(测评基本在周末,需周五前敲定)。今天已是周五/周六/周日 → 提醒就设在今天/尽快
+    const now = new Date(Date.now() + CN_TZ);
+    const day = now.getUTCDay();
+    let diff = 5 - day; // 周五=5
+    if (diff < 0) diff += 7;
+    const d = new Date(now.getTime() + diff * 86400000);
+    due = d.toISOString().slice(0, 10);
+    kind = '约测评';
+    note = '尚未约定测评/试听时间,周五联系家长敲定';
+    targetDate = '';
+  }
   const tid = stableId('T');
+  const title = `【转介绍】${body.referrer || ''}介绍 ${body.studentName || ''} · ${kind === '约测评' ? '还没约测评,本周五记得联系家长约时间' : `明天${kind},记得提醒家长`}`;
   const item = {
-    tid, title: `【转介绍】${body.referrer || ''}介绍 ${body.studentName || ''} · 明天${kind}，记得提醒家长`,
-    kind: '跟进', student_id: body.studentId || null, student_name: body.studentName || '',
-    class_name: '', note: `转介绍提醒（${kind}日 ${targetDate}）`, due_date: due, remind_at: body.remindAt || '17:00',
+    tid, title, kind: '跟进', student_id: body.studentId || null, student_name: body.studentName || '',
+    class_name: '', note, due_date: due, remind_at: body.remindAt || '17:00',
     status: '待办', creator: '助教', created_at_text: nowText(), raw: { source: 'referral', rid },
   };
   await upsert('todos', item, 'tid');
-  return tid;
+  return { tid, evalDate: '', trialDate: '' };
 }
 async function handlePost(p, body, d) {
   // ===== 2026-09-08 助教个人待办 =====
@@ -700,7 +719,8 @@ async function handlePost(p, body, d) {
   if (p === '/api/referral/record') {
     if (!body.referrer || !body.studentName) return { ok: false, 错误: '介绍家长与新生姓名必填' };
     const rid = stableId('R');
-    const remindTid = body.remind ? await linkReferralRemind(body, rid) : '';
+    // 总是生成提醒：有日期→约定日前一天提醒；无日期→本周五提醒去约
+    const { tid: remindTid } = await linkReferralRemind(body, rid);
     const row = {
       rid,
       referrer: body.referrer, referrer_phone: body.referrerPhone || '',
@@ -710,7 +730,7 @@ async function handlePost(p, body, d) {
       trial_date: body.trialDate || '', note: body.note || '',
       status: body.status || '待测评', student_id: body.studentId || '',
       remind_tid: remindTid, creator: body.creator || '助教',
-      created_at_text: nowText(), raw: body,
+      created_at_text: nowText(),
     };
     await upsert('referrals', row, 'rid');
     await log('新增转介绍', { 对象: body.studentName, 变更: `介绍人:${body.referrer} 测评:${body.evalDate || '未定'}` });
