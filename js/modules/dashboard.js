@@ -60,14 +60,49 @@
     const odBox = $('#homeOverdue');
     if (odBox) odBox.innerHTML = od.length ? `<div class="overdue-bar">🚨 <b>${od.length} 条待办已逾期</b>：${od.slice(0, 3).map(t => esc(t.标题)).join('；')}${od.length > 3 ? ` 等 ${od.length} 条` : ''} —— 请尽快处理</div>` : '';
 
-    // KPI 数字（缩小为辅，不再是主角）
+    // KPI 数字：在读 + S/A层级 + 逾期动作（PRD 8.1）
+    const stSegs = st.SEGMENTATION || [];
+    const segCount = lv => stSegs.filter(x => x.分层 === lv).length;
+    const priCount = stSegs.filter(x => ['S', 'A'].includes(x.分层) && x.未完成动作数 > 0).length;
     const stats = $('#homeStats');
     if (stats) stats.innerHTML = [
-      [`${termDispL(cur)}在读人次`, s.当期在读 || 0, '人次'],
-      [`${termDispL(cur)}去重学生`, s.去重学生 || 0, '人'],
-      [`${termDispL(cur)}班级数`, s.当期班级 || 0, '个'],
-      ['待办未办', todoPend().length, '条'],
+      [`${termDispL(cur)}在读`, s.去重学生 || 0, '人'],
+      ['🔴 S级重点', segCount('S'), '人'],
+      ['🟡 A级优先', segCount('A'), '人'],
+      ['⏰ 逾期动作', od.length, '条'],
     ].map(x => `<div class="kpi-card"><div class="kpi-k">${x[0]}</div><div class="kpi-v">${x[1]}<span>${x[2]}</span></div></div>`).join('');
+
+    // 今日优先跟进卡（PRD 8.1）：逾期必做 → S级 → A级 → 风险多者 → 最近跟进更久者
+    const pri = $('#homePriority');
+    if (pri) {
+      const byId = {};
+      st.ROSTER.forEach(r => { byId[r.id] = r; });
+      const items = stSegs
+        .filter(x => x.分层 === 'S' || x.分层 === 'A')
+        .map(x => ({ ...x, stu: byId[x.studentId] }))
+        .filter(x => x.stu)
+        .sort((a, b) => (a.分层 === 'S' ? 0 : 1) - (b.分层 === 'S' ? 0 : 1) || (b.风险标签 || []).length - (a.风险标签 || []).length);
+      if (!items.length) {
+        pri.innerHTML = '<div class="note ok">今天没有逾期或高优先级跟进，常规维护按课程节点进行。</div>';
+        const pc = $('#homePriorityCard'); if (pc) pc.style.display = 'none';
+      } else {
+        const pc = $('#homePriorityCard'); if (pc) pc.style.display = '';
+        const reasons = x => (x.分层依据 || []).slice(0, 2).map(r => `<span class="muted" style="font-size:11px;">· ${esc(r)}</span>`).join('');
+        pri.innerHTML = `<div style="display:flex;flex-direction:column;gap:8px;">` + items.slice(0, 8).map(x => `
+          <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid ${x.分层 === 'S' ? '#FECACA' : '#FDE68A'};border-radius:8px;background:${x.分层 === 'S' ? '#FEF2F2' : '#FFFBEB'};">
+            <b style="min-width:70px;color:${x.分层 === 'S' ? '#DC2626' : '#B45309'};">${segBadge(x.分层)} ${esc(x.stu.姓名)}</b>
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:11.5px;line-height:1.4;">${reasons(x)}</div>
+              ${(x.风险标签 || []).slice(0, 3).map(t => `<span class="badge gold" style="font-size:10px;margin-right:2px;">${esc(t.label || t.code)}</span>`).join('')}
+              ${x.未完成动作数 ? `<span class="badge blue" style="font-size:10px;">动作 ${x.未完成动作数}</span>` : ''}
+            </div>
+            <span class="btn sub sm" data-pri-go="${esc(x.studentId)}">档案</span>
+            <span class="btn sub sm" data-pri-flw="${esc(x.studentId)}" data-pri-name="${esc(x.stu.姓名)}">跟进</span>
+          </div>`).join('') + `</div>`;
+        pri.querySelectorAll('[data-pri-go]').forEach(b => b.onclick = () => { location.hash = 'profile/' + encodeURIComponent(b.dataset.priGo); });
+        pri.querySelectorAll('[data-pri-flw]').forEach(b => b.onclick = () => openAddFollowModal(b.dataset.priFlw, b.dataset.priName));
+      }
+    }
 
     // 今日待办（含逾期，置顶红）
     const tt = $('#homeTodoToday');
@@ -437,6 +472,11 @@
     });
   }
 
+function segBadge(lv) {
+    const map = { S: 'red', A: 'gold', B: 'free', C: 'gray' };
+    return lv ? `<span class="badge ${map[lv] || 'gray'}">${esc(lv)}</span>` : '';
+  }
+  // ===== 2026-09-09 学员分层：花名册增加层级列与筛选 =====
   function fillStuFilters() {
     const cur = (st.HOME && st.HOME.当期) || '2026秋';
     const terms = [...new Set(st.ENROLL.map(e => e.期))].filter(Boolean).sort().reverse();
@@ -446,10 +486,13 @@
       el.value = cur;
     }
     const camps = [...new Set(st.ENROLL.map(e => e.校区))].filter(Boolean).sort();
-    const campus = $('#stuCampus'); if (campus) campus.innerHTML = '<option value="">全部校区</option>' + camps.map(c => `<option>${esc(c)}</option>`).join('');
+    const campus = $('#stuCampus'); if (campus) campus.innerHTML = '<option value="">全部校区</option>' + camps.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('');
+    // 分层筛选(在stuSort 下拉后加一个分层下拉)
+    const segEl = $('#stuSeg'); if (segEl) { const segs = ['', 'S', 'A', 'B', 'C']; segEl.innerHTML = segs.map(s => `<option value="${s}">${s ? s + '级' : '全部层级'}</option>`).join(''); }
   }
   function stuRows() {
     const term = ($('#stuTerm') || {}).value || '2026秋', campus = ($('#stuCampus') || {}).value || '';
+    const segf = ($('#stuSeg') || {}).value || '';
     const kw = st.filters.stuKw.trim().toLowerCase();
     // 以“报名行”为维度过滤：筛选条件作用于单条报名记录，而不是学员名下全部班级
     let rows = [];
@@ -464,6 +507,7 @@
       if (term === 'all' && !es.length) rows.push({ st: a, es: [], enroll: null });
     });
     if (kw) rows = rows.filter(a => (a.st.姓名 || '').toLowerCase().includes(kw) || (a.st.电话 || '').includes(kw) || (a.enroll && (a.enroll.班级 || '').toLowerCase().includes(kw)));
+    if (segf) rows = rows.filter(a => (a.st.分层 || '') === segf);
     if (st.filters.stuSort === 'name') rows.sort((a, b) => (a.st.姓名 || '').localeCompare(b.st.姓名 || '', 'zh'));
     else rows.sort((a, b) => {
       const da = (a.enroll && (a.enroll.开课 || a.enroll.期)) || a.st.最近 || '';
@@ -511,10 +555,11 @@
     });
 
     const pg = st.PG.stu, slice = flatRows.slice((pg.page - 1) * pg.size, pg.page * pg.size);
-    box.innerHTML = slice.length ? `<table><tr><th>学员姓名 / ID</th><th>报读科目/班级</th><th>上课时间段</th><th>任课老师</th><th>校区</th><th>联系电话</th><th>操作</th></tr>` + slice.map(({ person, enroll, totalEnr, enrIndex }) => {
+    box.innerHTML = slice.length ? `<table><tr><th>学员姓名 / ID</th><th>层级</th><th>风险</th><th>报读科目/班级</th><th>上课时间段</th><th>任课老师</th><th>校区</th><th>联系电话</th><th>操作</th></tr>` + slice.map(({ person, enroll, totalEnr, enrIndex }) => {
       const multiTag = totalEnr > 1 ? `<span class="badge blue" style="margin-left:4px;font-size:10.5px;">兼报${totalEnr}科 (${enrIndex}/${totalEnr})</span>` : '';
       const timeStr = enroll ? clsTime(enroll) : '—';
-      return `<tr><td class="tk"><b>${esc(person.姓名)}</b>${multiTag}<div class="muted" style="font-size:11px;font-family:monospace;margin-top:2px;">ID: ${esc(person.sourceStudentId || person.id)}</div></td><td>${enroll ? clsCell(enroll) : '<span class="muted">—</span>'}</td><td class="tk">${esc(timeStr)}</td><td>${enroll ? esc(enroll.老师 || '—') : '—'}</td><td class="muted">${enroll ? esc(enroll.校区 || '—') : '—'}</td><td class="muted">${esc(person.电话)}</td><td style="display:flex;gap:6px;"><span class="btn sub sm" data-id="${esc(person.id)}">学员档案</span><span class="btn sub sm" data-leave-kid="${esc(person.id)}" data-leave-name="${esc(person.姓名)}" data-leave-cls="${esc(enroll ? enroll.班级 : '')}">记请假</span></td></tr>`;
+      const riskTags = (person.风险标签 || []).slice(0, 2).map(t => `<span class="badge gold" style="font-size:10px;margin-right:2px;">${esc(t.label || t.code || '')}</span>`).join('');
+      return `<tr><td class="tk"><b>${esc(person.姓名)}</b>${multiTag}<div class="muted" style="font-size:11px;font-family:monospace;margin-top:2px;">ID: ${esc(person.sourceStudentId || person.id)}</div></td><td>${segBadge(person.分层)}</td><td style="min-width:80px;">${riskTags || '<span class="muted">—</span>'}</td><td>${enroll ? clsCell(enroll) : '<span class="muted">—</span>'}</td><td class="tk">${esc(timeStr)}</td><td>${enroll ? esc(enroll.老师 || '—') : '—'}</td><td class="muted">${enroll ? esc(enroll.校区 || '—') : '—'}</td><td class="muted">${esc(person.电话)}</td><td style="display:flex;gap:6px;"><span class="btn sub sm" data-id="${esc(person.id)}">学员档案</span><span class="btn sub sm" data-leave-kid="${esc(person.id)}" data-leave-name="${esc(person.姓名)}" data-leave-cls="${esc(enroll ? enroll.班级 : '')}">记请假</span></td></tr>`;
     }).join('') + '</table>' : '<div class="note">没有符合条件的学员</div>';
     renderPager($('#stuPager'), flatRows.length, pg.page, pg.size, (p, s) => { st.PG.stu = { page: p, size: s }; renderStudents(); });
     box.querySelectorAll('[data-id]').forEach(b => b.onclick = () => { location.hash = 'profile/' + encodeURIComponent(b.dataset.id); });
@@ -1138,6 +1183,7 @@
     $('#leaveKw') && ($('#leaveKw').oninput = e => { st.filters.leaveKw = e.target.value; renderLeavePage(); });
     $('#stuSearch') && ($('#stuSearch').oninput = e => { st.filters.stuKw = e.target.value; st.PG.stu.page = 1; renderStudents(); });
     $('#stuSort') && ($('#stuSort').onchange = e => { st.filters.stuSort = e.target.value; renderStudents(); });
+    $('#stuSeg') && ($('#stuSeg').onchange = () => { st.PG.stu.page = 1; renderStudents(); });
     $('#stuTerm') && ($('#stuTerm').onchange = () => { st.PG.stu.page = 1; renderStudents(); });
     $('#stuCampus') && ($('#stuCampus').onchange = () => { st.PG.stu.page = 1; renderStudents(); });
     ['schTerm', 'schType', 'schGrade', 'schSubject', 'schDay', 'schTeacher', 'schCampus'].forEach(id => $('#' + id) && ($('#' + id).onchange = () => { st.PG.sch.page = 1; renderSchedule(); }));
