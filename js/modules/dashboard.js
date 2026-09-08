@@ -1075,7 +1075,13 @@ function segBadge(lv) {
   async function openFamily(id) {
     const d = await api.get('/api/family?id=' + encodeURIComponent(id)).catch(() => null); if (!d || !d.家庭) { location.hash = 'stu'; return; }
     const f = d.家庭, kids = d.孩子 || [], pending = d.待分配报名 || [];
-    $('#famTitle').textContent = (f.sourceName || kids.map(k => k.姓名).join(' / ')) + ' · 家庭档案'; $('#famStatus').textContent = f.needsReview ? `待确认 ${pending.length} 条` : '归属已确认'; $('#famMeta').textContent = `家庭ID ${f.familyId} · 共用电话 ${f.phone || '—'} · ${kids.length} 个孩子档案`;
+    $('#famTitle').textContent = (f.sourceName || kids.map(k => k.姓名).join(' / ')) + ' · 家庭档案'; $('#famStatus').textContent = f.needsReview ? `待确认 ${pending.length} 条` : '归属已确认';
+    // 家庭分层摘要（PRD 8.5）：孩子数/在读数/多子女提示/S/A人数/未完成动作
+    const segById = {}; (st.SEGMENTATION || []).forEach(x => { segById[x.studentId] = x; });
+    const famKids = kids.filter(k => segById[k.id]);
+    const famSA = famKids.filter(k => segById[k.id].分层 === 'S' || segById[k.id].分层 === 'A');
+    const famActions = famKids.reduce((s, k) => s + (segById[k.id].未完成动作数 || 0), 0);
+    $('#famMeta').innerHTML = `家庭ID ${f.familyId} · 共用电话 ${f.phone || '—'} · ${kids.length} 个孩子档案 · ${famSA.length ? `<span class="badge gold">S/A级 ${famSA.length} 人</span>` : ''}${famActions ? ` <span class="badge blue">未完成动作 ${famActions} 个</span>` : ''}${f.needsReview ? ' <span class="badge gold">家庭归属待确认</span>' : ''}`;
     $('#famKids').innerHTML = `<div class="family-kids">${kids.map(k => `<div class="kid-card"><div class="kk-name">${esc(k.姓名)}</div><div class="muted">${esc(k.年级 || '年级待确认')}</div><span class="btn sub sm" data-kid="${esc(k.id)}">打开孩子档案</span></div>`).join('')}</div>`;
     $('#famKids').querySelectorAll('[data-kid]').forEach(b => b.onclick = () => { location.hash = 'profile/' + encodeURIComponent(b.dataset.kid); });
     $('#famPendingCard').classList.toggle('hide', !pending.length); $('#famPending').innerHTML = pending.length ? '<div class="note">当前有待确认报名，请在后续家庭归属模块处理。</div>' : '<div class="note">没有待确认课程</div>';
