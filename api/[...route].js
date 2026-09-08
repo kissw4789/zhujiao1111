@@ -132,6 +132,17 @@ const q = encodeURIComponent;
 async function select(table, params = 'select=*') {
   return await sb(`${table}?${params}`);
 }
+// 仅"表/列不存在"(PGRST204/205/206)降级为空数组；网络错误/500/超时等真实异常向上抛（PRD 10.8）
+async function selectSafe(table, params = 'select=*') {
+  try {
+    return await sb(`${table}?${params}`);
+  } catch (e) {
+    const msg = String(e && e.message || e) || '';
+    const pgrst = /PGRST(20[4-6])/.test(msg) || /Could not find the (table|column)/.test(msg);
+    if (pgrst) return [];
+    throw e;
+  }
+}
 async function upsert(table, rows, conflict) {
   const arr = Array.isArray(rows) ? rows : [rows];
   if (!arr.length) return [];
@@ -349,12 +360,12 @@ async function getData() {
     select('course_outlines', 'select=*'),
     select('followups', 'select=*'),
     select('leaves', 'select=*'),
-    // 2026-09-08 新增两张表；若建表SQL尚未执行则降级为空，系统其余功能不受影响
-    select('todos', 'select=*&order=created_at.desc').catch(() => []),
-    select('lesson_feedbacks', 'select=fid,term,lesson,lesson_title,lesson_date,student_id,student_name,class_name,teacher,subject,campus,status&order=class_name.asc').catch(() => []),
+    // 2026-09-08 新增两张表；仅当"表/列不存在"时降级为空，网络错误/500 会抛给上层（PRD 10.8）
+    selectSafe('todos', 'select=*&order=created_at.desc'),
+    selectSafe('lesson_feedbacks', 'select=fid,term,lesson,lesson_title,lesson_date,student_id,student_name,class_name,teacher,subject,campus,status&order=class_name.asc'),
   ]);
-  // 转介绍：表未建则降级为空，不影响其余功能
-  const referrals = await select('referrals', 'select=*&order=created_at.desc').catch(() => []);
+  // 转介绍：仅表不存在降级为空
+  const referrals = await selectSafe('referrals', 'select=*&order=created_at.desc');
   const studentsById = Object.fromEntries(students.map(s => [s.id, s]));
   const familiesById = Object.fromEntries(families.map(f => [f.family_id, f]));
   const enrsByStudent = {};
