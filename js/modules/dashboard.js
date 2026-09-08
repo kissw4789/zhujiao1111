@@ -132,16 +132,18 @@
     try { return Z.utils.curTermLabel(); } catch (e) { return '2026秋'; }
   };
   const stuActiveClasses = id => (st.ENR_BY_ID[id] || []).filter(e => !e.is_void && (e.期 === currentTerm() || e.term === currentTerm())).map(e => e.班级).filter(Boolean);
-  function bindStuAutoClass(nameEl, clsEl) {
+  // 第三个参数 onClassSet：班级确定后回调(班级名)，可用于联动日期等
+  function bindStuAutoClass(nameEl, clsEl, onClassSet) {
     if (!nameEl || !clsEl) return;
+    const fire = cls => { if (typeof onClassSet === 'function') onClassSet(cls); };
     nameEl.onchange = () => {
       const val = (nameEl.value || '').trim();
       if (!val) { clsEl.value = ''; return; }
       const found = st.ROSTER.find(s => s.姓名 === val);
-      if (!found) return; // 非系统内学员，不打扰，让老板手动填/选
+      if (!found) return;
       const list = [...new Set(stuActiveClasses(found.id))];
       if (!list.length) { clsEl.value = ''; toast('该学员暂无当前学期在读班，请手动填/选班级', false); return; }
-      if (list.length === 1) { clsEl.value = list[0]; return; }
+      if (list.length === 1) { clsEl.value = list[0]; fire(list[0]); return; }
       // 多班：下拉让老板选
       const mk = (label, fn) => {
         const w = document.createElement('div');
@@ -150,7 +152,7 @@
         b.type = 'button';
         b.textContent = label;
         b.style.cssText = 'margin:2px 6px 2px 0;padding:3px 10px;border:1px solid #F59E0B;border-radius:6px;background:#fff;cursor:pointer;color:#92400E;';
-        b.onclick = () => { fn(); w.remove(); };
+        b.onclick = () => { clsEl.value = c; fire(c); w.remove(); };
         w.appendChild(b);
         return w;
       };
@@ -162,7 +164,7 @@
       label.dataset.autocls = '1';
       wrap.appendChild(label);
       list.forEach(c => {
-        const w = mk('✓ ' + c, () => { clsEl.value = c; });
+        const w = mk('✓ ' + c, () => { clsEl.value = c; fire(c); });
         w.dataset.autocls = '1';
         wrap.appendChild(w);
       });
@@ -649,7 +651,22 @@
       // 当输入姓名时，自动联动匹配当前学期在读班级（复用 bindStuAutoClass）
       const nameInput = box.querySelector('#lv-name');
       const clsInput = box.querySelector('#lv-class');
-      bindStuAutoClass(nameInput, clsInput);
+      const dateInput = box.querySelector('#lv-date');
+      // 班级确定后：按该班上课星期自动计算"最近一次上课日"填入请假日期
+      const autoLeaveDate = cls => {
+        if (!cls || !dateInput) return;
+        const sch = schedMap[cls];
+        const dayMap = { '周一': 1, '周二': 2, '周三': 3, '周四': 4, '周五': 5, '周六': 6, '周日': 0 };
+        const wd = sch && dayMap[sch.星期];
+        if (wd === undefined) return; // 查不到排课星期，保留默认
+        const now = new Date();
+        let diff = wd - now.getDay();
+        if (diff <= 0) diff += 7; // 距今最近的下一次该上课日
+        const d = new Date(now.getTime() + diff * 86400000);
+        const ds = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        dateInput.value = ds;
+      };
+      bindStuAutoClass(nameInput, clsInput, autoLeaveDate);
 
       okBtn.onclick = async () => {
         let sid = studentId;
