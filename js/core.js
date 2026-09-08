@@ -89,6 +89,7 @@
     TODO_LIST: [],
     FEEDBACK_META: [],
     REFERRALS: [],
+    SEGMENTATION: [],
     LOGIN_OK: false,
     currentPage: 'home',
     filters: {
@@ -100,7 +101,10 @@
   };
 
   const api = async (path, opt = {}) => {
-    const res = await fetch(path, { credentials: 'same-origin', ...opt, headers: { ...(opt.headers || {}) } });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), Number(opt.timeout || 20000));
+    try {
+      const res = await fetch(path, { credentials: 'same-origin', ...opt, signal: controller.signal, headers: { ...(opt.headers || {}) } });
     const text = await res.text();
     let data = null;
     try { data = text ? JSON.parse(text) : {}; } catch (e) { data = { ok: false, 错误: text || res.statusText }; }
@@ -114,6 +118,10 @@
     const m = (opt.method || 'GET').toUpperCase();
     if (m !== 'GET' && data && data.ok) __bootCache = null;
     return data;
+    } catch (e) {
+      if (e && e.name === 'AbortError') throw new Error('请求超时，请检查网络后重试');
+      throw e;
+    } finally { clearTimeout(timer); }
   };
   const get = path => api(path);
   const post = (path, body) => api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
@@ -232,6 +240,7 @@
       TODO_LIST: b && Array.isArray(b.todoList) ? b.todoList : [],
       FEEDBACK_META: b && Array.isArray(b.feedbackMeta) ? b.feedbackMeta : [],
       REFERRALS: b && Array.isArray(b.referrals) ? b.referrals : [],
+      SEGMENTATION: b && Array.isArray(b.segmentation) ? b.segmentation : [],
     };
     Object.assign(state, d);
     __bootCache = { t: Date.now(), d };
@@ -298,7 +307,8 @@
   };
 
   const route = () => {
-    const h = decodeURIComponent(location.hash.replace(/^#/, ''));
+    let h = '';
+    try { h = decodeURIComponent(location.hash.replace(/^#/, '')); } catch (e) { h = ''; toast('链接格式无效，已返回首页', false); }
     if (h.startsWith('profile/')) {
       showPage('profile');
       Z.modules && Z.modules.openProfile && Z.modules.openProfile(h.slice(8));
@@ -310,6 +320,8 @@
       return;
     }
     if (h) {
+      const valid = ['home', 'sch', 'stu', 'leave', 'flw', 'ref', 'oln'];
+      if (!valid.includes(h)) h = 'home';
       showPage(h);
       Z.modules && Z.modules.onPage && Z.modules.onPage(h);
       return;

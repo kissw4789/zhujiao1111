@@ -155,6 +155,11 @@ function cnStudent(s) {
     年级: s.grade || '',
     英文名: s.english_name || '',
     标签: s.tags || [],
+    人工分层: s.segment_code || '',
+    人工风险等级: s.risk_level || '',
+    人工风险标签: Array.isArray(s.risk_tags) ? s.risk_tags : [],
+    分层备注: s.segment_note || '',
+    分层更新时间: s.segment_updated_at || '',
     意向: s.intent || '',
     备注: s.note || '',
     家庭排序: s.family_order || 1,
@@ -292,7 +297,10 @@ function validRecentOrder(o) {
 function orderBelongsToStudent(o, st) {
   const sid = st.id;
   const sourceId = st.source_student_id || st.id;
-  return o.child_id === sid || o.source_student_id === sourceId || (o.phone && st.phone && o.phone === st.phone);
+  // 已明确归属的订单只归该学员；电话仅用于未分配订单的家庭候选
+  const explicit = String(o.child_id || o.source_student_id || '').trim();
+  if (explicit) return o.child_id === sid || o.source_student_id === sourceId;
+  return !!(o.phone && st.phone && o.phone === st.phone);
 }
 function displayTime(weekday, timeRange, startDate) {
   const parts = [];
@@ -353,6 +361,58 @@ async function getData() {
   enrollments.forEach(e => { if (e.student_id) (enrsByStudent[e.student_id] = enrsByStudent[e.student_id] || []).push(e); });
   return { students, families, enrollments, orders, schedule, outlines, followups, leaves, todos, feedbacks, referrals, studentsById, familiesById, enrsByStudent };
 }
+function segmentStudent(st, d, now) {
+  const es = (d.enrsByStudent[st.id] || []).filter(e => !e.is_void && e.active_in_latest !== false && e.source_status !== '历史在班学生');
+  const active = es.filter(activeEnrollment);
+  const subjects = new Set(active.map(e => inferSubject(e.subject, e.class_name)).filter(Boolean));
+  const familyKids = d.students.filter(x => x.family_id && x.family_id === st.family_id);
+  const familyActiveKids = familyKids.filter(k => (d.enrsByStudent[k.id] || []).some(activeEnrollment));
+  const tags = [], reasons = [], add = (code, label, points, reason) => { tags.push({ code, label }); reasons.push(reason); score += points; };
+  let score = 0;
+  if (subjects.size > 1) add('MULTI_SUBJECT', '多学科', 35, '当期报名涉及多个学科');
+  if (active.length > 1) add('MULTI_ENROLLMENT', '多报名', 28, '当期有多个有效报名记录');
+  if (familyActiveKids.length > 1) add('MULTI_CHILD_FAMILY', '多子女家庭', 30, '同一家庭有多个在读孩子');
+  const gradeText = String(st.grade || '');
+  if (/^[一二三四年级]|^[1-4]年级/.test(gradeText)) add('LOW_GRADE', '低年级', 18, '低年级家长需要更主动维护');
+  const first = String(st.first_date || '');
+  if (first && ((new Date(now) - new Date(first)) / 86400000 <= 30)) add('NEW_STUDENT', '新学员', 20, '首次报名在近30天内');
+  if (es.some(e => Number(e.arrears || 0) > 0)) add('ARREARS', '存在欠费', 35, '报名记录存在欠费');
+  const recentLeave = d.leaves.some(l => l.student_id === st.id && !(l.raw && l.raw.deleted) && String(l.leave_date || '') >= new Date(Date.now() - 14 * 86400000).toISOString().slice(0, 10));
+  if (recentLeave) add('ABSENCE', '近期请假/缺课', 20, '近14天有请假或消课记录');
+  if (d.familiesById[st.family_id] && d.familiesById[st.family_id].needs_review) add('FAMILY_REVIEW', '家庭待确认', 25, '家庭归属仍待确认');
+  const related = d.followups.filter(f => f.student_id === st.id);
+  const last = related.map(f => f.created_at || '').filter(Boolean).sort().pop() || '';
+  const next = related.map(f => f.next_followup_date || (f.raw && f.raw.next_followup_date) || '').filter(Boolean).sort().pop() || '';
+  if (next && next < now) add('FOLLOWUP_OVERDUE', '跟进逾期', 25, '已超过下次跟进日期');
+  if (active.length && !next && !last) add('NO_NEXT_ACTION', '缺少跟进安排', 18, '当前在读但还没有跟进记录');
+  const refs = d.referrals.filter(r => r.student_id === st.id || (r.student_name && r.student_name === st.name)).filter(r => !['已报名', '已流失'].includes(r.status));
+  if (refs.length) add('REFERRAL_PENDING', '转介绍待处理', 25, '存在未完成的转介绍流程');
+  const pendingFb = d.feedbacks.filter(f => f.student_id === st.id && f.term === TERM && f.status !== '已出反馈');
+  if (pendingFb.length) add('FEEDBACK_PENDING', '反馈未完成', 20, '当前学期存在未完成反馈');
+  const manualCode = st.segment_code || '';
+  const autoCode = score >= 65 ? 'S' : score >= 25 ? 'A' : active.length ? 'B' : 'C';
+  const labels = { S: '重点维护', A: '优先跟进', B: '常规维护', C: '低频维护' };
+  const effectiveCode = manualCode || autoCode;
+  return { 自动分层: autoCode, 自动分层名称: labels[autoCode], 分层: effectiveCode, 分层名称: labels[effectiveCode] || effectiveCode, 分层分数: score, 风险标签: tags, 分层依据: reasons, 最近跟进: last, 下次跟进: next, 未完成动作数: (d.todos || []).filter(t => t.student_id === st.id && t.status === '待办').length, 人工覆盖: !!manualCode };
+}
+function segmentationActions(st, seg, d) {
+  if (!['S', 'A'].includes(seg.分层)) return [];
+  const actions = [];
+  const add = (rule, title, days = 0) => {
+    const due = new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
+    const sourceKey = `seg:${st.id}:${rule}:${due.slice(0, 7)}`;
+    if (!(d.todos || []).some(t => t.source_key === sourceKey || (t.raw && t.raw.source_key === sourceKey))) actions.push({ sourceKey, rule, title, due });
+  };
+  add('weekly_touch', `【${seg.分层名称}】${st.name} 家长触达`, 0);
+  seg.风险标签.forEach(t => {
+    if (t.code === 'ARREARS') add('arrears', `${st.name} 欠费核对与提醒`, 0);
+    if (t.code === 'ABSENCE') add('absence', `${st.name} 请假后续/补课回访`, 1);
+    if (t.code === 'FEEDBACK_PENDING') add('feedback', `${st.name} 讲次反馈催收`, 0);
+    if (t.code === 'FAMILY_REVIEW') add('family_review', `${st.name} 家庭归属核对`, 0);
+    if (t.code === 'NO_NEXT_ACTION') add('followup_plan', `${st.name} 补充下一步跟进安排`, 0);
+  });
+  return actions;
+}
 function rosterView(d, now) {
   return d.students.map(st => {
     const es = d.enrsByStudent[st.id] || [];
@@ -361,6 +421,7 @@ function rosterView(d, now) {
     return {
       ...cnStudent(st),
       状态: studentStatus(es, now),
+      ...segmentStudent(st, d, now),
       当期: es.filter(activeEnrollment).map(e => ({ 班级: e.class_name, 老师: e.teacher, 期: e.term, 状态: enrStatus(e, now), 校区: e.campus, 学科: inferSubject(e.subject, e.class_name), 时间: displayTime(e.weekday || '', e.time_range || '', e.start_date || ''), 开课: e.start_date || '' })),
       累计缴费: Math.round(d.orders.filter(o => orderBelongsToStudent(o, st) && validRecentOrder(o)).reduce((s, o) => s + Number(o.amount || 0), 0)),
       家庭: fam ? cnFamily(fam, kids) : null,
@@ -434,7 +495,7 @@ function homeData(d, now) {
   const kids = new Set(active.map(e => e.student_id));
   const classes = new Set(active.map(e => e.class_name));
   const weekDayNames = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
-  const weekday = weekDayNames[new Date().getDay()];
+  const weekday = weekDayNames[new Date(Date.now() + CN_TZ).getUTCDay()];
   const todayClasses = classRows(d).filter(s => s.星期 === weekday);
   const todo = [];
   const followups = mapFollowups(d);
@@ -541,6 +602,7 @@ function bootstrapData(d, now) {
     todoList: mapTodos(d),
     referrals: mapReferrals(d),
     feedbackMeta: feedbackMeta(d),
+    segmentation: d.students.map(st => { const seg = segmentStudent(st, d, now); return { studentId: st.id, ...seg, actions: segmentationActions(st, seg, d) }; }),
     todos: homeData(d, now).今日待办 || [],
   };
 }
@@ -633,7 +695,7 @@ async function handlePost(p, body, d) {
       const m = d.students.find(s => s.name && body.student_name && s.name.trim() === body.student_name.trim());
       if (m) sid = m.id;
     }
-    const fid = body.fid || `FB-${body.term || TERM}-${body.lesson || '第1讲'}-${sid || stableId('X')}`;
+    const fid = body.fid || `FB-${body.term || TERM}-${body.lesson || '第1讲'}-${body.class_name || ''}-${sid || stableId('X')}`;
     const item = {
       fid, term: body.term || TERM, lesson: body.lesson || '第1讲', lesson_title: body.lesson_title || '', lesson_date: body.lesson_date || '',
       student_id: sid || null, student_name: body.student_name || '', class_name: body.class_name || '', teacher: body.teacher || '',
@@ -649,7 +711,7 @@ async function handlePost(p, body, d) {
     if (!rows.length) return { ok: false, 错误: 'rows为空' };
     if (rows.length > 500) return { ok: false, 错误: '单次最多500条' };
     const items = rows.map(r => ({
-      fid: r.fid || `FB-${r.term || TERM}-${r.lesson || '第1讲'}-${r.student_id || stableId('X')}`,
+      fid: r.fid || `FB-${r.term || TERM}-${r.lesson || '第1讲'}-${r.class_name || ''}-${r.student_id || stableId('X')}`,
       term: r.term || TERM, lesson: r.lesson || '第1讲', lesson_title: r.lesson_title || '', lesson_date: r.lesson_date || '',
       student_id: r.student_id || null, student_name: r.student_name || '', class_name: r.class_name || '', teacher: r.teacher || '',
       grade: r.grade || '', subject: r.subject || '', campus: r.campus || '', phone: r.phone || '',
@@ -796,22 +858,36 @@ async function handlePost(p, body, d) {
   if (p === '/api/student/edit') {
     const st = d.studentsById[body.id];
     if (!st) return { ok: false, 错误: '没有这个学员' };
-    await patch('students', `id=eq.${q(body.id || '')}`, { name: body.姓名 || '', phone: body.电话 || '', gender: body.性别 || '', grade: body.年级 || '', note: body.备注 || '', updated_at: new Date().toISOString() });
-    // 联动同步：姓名/电话变化时，同步报名、反馈、家庭表中的冗余姓名/电话，保证全系统同一口径
+    // 区分"未提交字段(保留旧值)"与"提交为空(明确清空)"：仅写 body 中显式提交的字段
+    const upd = { updated_at: new Date().toISOString() };
+    if ('姓名' in body) upd.name = body.姓名;
+    if ('电话' in body) upd.phone = body.电话;
+    if ('年级' in body) upd.grade = body.年级;
+    if ('性别' in body) upd.gender = body.性别;
+    if ('备注' in body) upd.note = body.备注;
+    await patch('students', `id=eq.${q(body.id || '')}`, upd);
+    // 联动同步：姓名/电话变化时，同步报名、反馈、家庭、订单的冗余字段，保证全系统同一口径
     const changed = {};
-    if (body.姓名 && body.姓名 !== st.name) changed.name = body.姓名;
-    if (body.电话 && body.电话 !== (st.phone || '')) changed.phone = body.电话;
+    if ('姓名' in body && body.姓名 && body.姓名 !== st.name) changed.name = body.姓名;
+    if ('电话' in body && body.电话 && body.电话 !== (st.phone || '')) changed.phone = body.电话;
     if (changed.name) {
       await patch('enrollments', `student_id=eq.${q(body.id)}`, { student_name: changed.name });
       await patch('lesson_feedbacks', `student_id=eq.${q(body.id)}`, { student_name: changed.name });
+      await patch('orders', `child_id=eq.${q(body.id)}`, { student_name: changed.name });
+      if (st.family_id) {
+        const fam = d.familiesById[st.family_id];
+        if (fam && (!fam.source_name || fam.source_name === st.name)) {
+          await patch('families', `family_id=eq.${q(st.family_id)}`, { source_name: changed.name });
+        }
+      }
     }
     if (changed.phone) {
       await patch('enrollments', `student_id=eq.${q(body.id)}`, { phone: changed.phone });
       if (st.family_id) {
         const fam = d.familiesById[st.family_id];
         if (fam) {
-          await patch('families', `family_id=eq.${q(st.family_id)}`, { phone: changed.phone, source_name: body.姓名 || fam.source_name || '' });
-          await patch('orders', `family_id=eq.${q(st.family_id)}&phone=neq.${q(changed.phone)}`, { phone: changed.phone });
+          await patch('families', `family_id=eq.${q(st.family_id)}`, { phone: changed.phone });
+          await patch('orders', `family_id=eq.${q(st.family_id)}`, { phone: changed.phone });
         }
       }
     }
@@ -826,8 +902,32 @@ async function handlePost(p, body, d) {
     return { ok: true, eid: e.eid };
   }
   if (p === '/api/enrollment/edit') {
-    await patch('enrollments', `eid=eq.${q(body.eid || '')}`, { class_name: body.班级 || '', class_display_name: body.班级 || '', normalized_class_name: body.班级 || '', start_date: body.开课 || '', end_date: body.结课 || '', teacher: body.老师 || '', campus: body.校区 || '', subject: body.学科 || '', fee_text: body.课费 || '', amount_due: Number(body.课费 || 0), updated_at: new Date().toISOString() });
-    await log('编辑报名', { 对象: body.eid || '', 班级: body.班级 || '' });
+    const old = d.enrollments.find(e => e.eid === body.eid);
+    if (!old) return { ok: false, 错误: '没有这条报名记录' };
+    const cls = body.班级 !== undefined ? (body.班级 || '') : (old.class_name || '');
+    // 根据开课日期重算学期；未提供则用原有学期，保证 term 与 class 归属一致
+    const term = (body.开课 && body.开课 !== old.start_date) ? termOf(body.开课) : (body.term || old.term || termOf(body.开课 || old.start_date || today()));
+    const classId = body.班级 !== undefined && body.班级 !== old.class_name
+      ? `CLS-${crypto.createHash('sha1').update(cls + term).digest('hex').slice(0, 10)}`
+      : (old.class_id || '');
+    const grade = body.年级 !== undefined ? body.年级 : old.grade;
+    const subject = body.学科 !== undefined ? body.学科 : old.subject;
+    const stRef = d.studentsById[old.student_id];
+    const effGrade = grade || (stRef && stRef.grade) || gradeOfClass(cls);
+    const effSubject = subject || normalizeSubject('', cls);
+    // 同步班级主档（不存在则按稳定规则创建）
+    if (classId) {
+      await upsert('classes', { id: classId, class_name: cls, normalized_class_name: cls, term, grade: effGrade, subject: effSubject, campus: body.校区 !== undefined ? body.校区 : old.campus, teacher: body.老师 !== undefined ? body.老师 : old.teacher, start_date: body.开课 || old.start_date || today(), end_date: body.结课 || old.end_date || '', class_type: classType(cls), active_in_latest: true }, 'id').catch(() => {});
+    }
+    const patchObj = {
+      class_name: cls, class_display_name: cls, normalized_class_name: cls, class_id: classId, term, term_name: term, grade: effGrade, subject: effSubject,
+      start_date: body.开课 !== undefined ? body.开课 : (old.start_date || ''), end_date: body.结课 !== undefined ? body.结课 : (old.end_date || ''),
+      teacher: body.老师 !== undefined ? body.老师 : (old.teacher || ''), campus: body.校区 !== undefined ? body.校区 : (old.campus || ''),
+      fee_text: body.课费 !== undefined ? body.课费 : (old.fee_text || ''), amount_due: body.课费 !== undefined ? Number(body.课费 || 0) : (old.amount_due || 0),
+      updated_at: new Date().toISOString(),
+    };
+    await patch('enrollments', `eid=eq.${q(body.eid || '')}`, patchObj);
+    await log('编辑报名', { 对象: body.eid || '', 班级: cls });
     return { ok: true };
   }
   if (p === '/api/enrollment/void') {
