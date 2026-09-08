@@ -184,7 +184,7 @@
     qs('#dlgTitle').textContent = title;
     qs('#dlgBody').innerHTML = bodyHtml;
     qs('#dlgX').onclick = () => dlgClose();
-    mask.onclick = e => { if (e.target === mask) dlgClose(); };
+    // 2026-09-08: 遮罩区不再可点击关闭(防误触丢失表单),只允许点 ✕ / 取消
     onMount && onMount(qs('#dlgBody'));
     mask.classList.remove('hide');
   };
