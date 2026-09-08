@@ -1000,7 +1000,23 @@ function segBadge(lv) {
     $('#pfName').textContent = a.姓名 + ' · 学员档案';
     $('#pfMeta').innerHTML = `学员唯一ID: <b>${esc(a.sourceStudentId || a.id)}</b>` + (d.家庭 && (d.家庭.children || []).length > 1 ? ` <span class="btn sub sm" data-open-family="${esc(d.家庭.familyId)}">查看家庭档案 (${d.家庭.children.length}孩共用电话)</span>` : '');
     const famBtn = $('#pfMeta [data-open-family]'); if (famBtn) famBtn.onclick = () => { location.hash = 'family/' + encodeURIComponent(famBtn.dataset.openFamily); };
-    $('#pfBase').innerHTML = `<div class="kv"><div class="i"><span class="l">学员姓名</span><b>${esc(a.姓名)}</b></div><div class="i"><span class="l">年级</span>${esc(a.年级 || '—')}</div><div class="i"><span class="l">性别</span>${esc(a.性别 || '—')}</div><div class="i"><span class="l">联系电话</span>${esc(a.电话 || '—')}</div><div class="i"><span class="l">状态</span>${stTag(a.状态)}</div><div class="i"><span class="l">首次报名</span>${esc(a.首次 || '—')}</div>${a.备注 ? `<div class="i" style="grid-column:1/-1"><span class="l">备注</span>${esc(a.备注)}</div>` : ''}</div>`;
+    $('#pfBase').innerHTML = `<div class="kv"><div class="i"><span class="l">学员姓名</span><b>${esc(a.姓名)}</b></div><div class="i"><span class="l">年级</span>${esc(a.年级 || '—')}</div><div class="i"><span class="l">性别</span>${esc(a.性别 || '—')}</div><div class="i"><span class="l">联系电话</span>${esc(a.电话 || '—')}</div><div class="i"><span class="l">状态</span>${stTag(a.状态)}</div><div class="i"><span class="l">首次报名</span>${esc(a.首次 || '—')}</div>${a.备注 ? `<div class="i" style="grid-column:1/-1"><span class="l">备注</span>${esc(a.备注)}</div>` : ''}</div>
+    <div style="margin-top:12px;border-top:2px solid #E2E8F0;padding-top:12px;">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <b>跟进画像</b>
+        ${segBadge(d.分层)}${d.人工覆盖 ? '<span class="badge" style="background:#DBEAFE;color:#1E40AF;">人工覆盖</span>' : ''}
+        <span class="muted">自动: ${esc(d.自动分层 || '—')} · 分数 ${d.分层分数 || 0}</span>
+        <span class="btn sub sm" data-seg-edit="${esc(a.id)}">编辑分层</span>
+      </div>
+      ${(d.风险标签 || []).length ? `<div style="margin-top:6px;">${d.风险标签.map(t => `<span class="badge gold" style="font-size:10.5px;margin-right:4px;">${esc(t.label || t.code)}</span>`).join('')}</div>` : ''}
+      ${(d.分层依据 || []).length ? `<div style="margin-top:4px;font-size:12px;color:#6B7280;line-height:1.5;">${d.分层依据.slice(0, 3).map(r => `· ${esc(r)}`).join('<br>')}</div>` : ''}
+      <div style="margin-top:6px;font-size:12px;color:#6B7280;display:flex;gap:12px;flex-wrap:wrap;">
+        <span>📅 最近跟进: ${d.最近跟进 ? esc(d.最近跟进.slice(0,10)) : '无'}</span>
+        <span>📅 下次跟进: ${d.下次跟进 ? esc(d.下次跟进.slice(0,10)) : '未安排'}</span>
+        ${d.未完成动作数 ? `<span class="badge blue">${d.未完成动作数} 个待办未完成</span>` : ''}
+      </div>
+    </div>`;
+    $('#pfBase').querySelectorAll('[data-seg-edit]').forEach(b => b.onclick = () => openSegmentDlg(b.dataset.segEdit, d));
     $('#pfEdit').onclick = () => editStudentDlg(a);
     $('#pfAddEnr').onclick = () => addEnrollDlg(a);
     $('#pfAddFlwBtn').onclick = () => openAddFollowModal(a.id, a.姓名);
@@ -1069,6 +1085,30 @@ function segBadge(lv) {
   function curOutline() { return ((st.OUTLINES[$('#olSys').value] || {})[$('#olTrack').value] || {})[$('#olSeason').value] || []; }
   function renderOutlineDetail() { if (!$('#olPretty')) return; const rows = curOutline(), sys = $('#olSys').value, tr = $('#olTrack').value, se = $('#olSeason').value, seName = SEASON_NAME[se] || se; $('#olCount').textContent = `共 ${rows.length} 讲 · ${SYS_SUBJECT[sys] || ''}`; $('#olTitle').textContent = `${sys || ''} · ${tr || ''} · ${seName || ''}内容明细`; $('#olPretty').innerHTML = rows.length ? rows.map(r => `<div class="ol-row"><span class="n">第${r.n}讲</span><span><span class="t">${esc(r.topic)}</span>${r.module ? `<span class="m">${esc(r.module)}</span>` : ''}${r.desc ? `<div class="d">${esc(r.desc)}</div>` : ''}</span></div>`).join('') : '<div class="note">没有该大纲数据</div>'; }
 
+
+  // 分层编辑弹窗：人工覆盖/清除（PRD 6.2）
+  function openSegmentDlg(sid, profile) {
+    const cur = profile || {};
+    dlg('跟进分层 · ' + (cur.基本 ? cur.基本.姓名 : ''), `
+      <div class="kv" style="margin-bottom:12px;">
+        <div class="i"><span class="l">自动层级</span>${segBadge(cur.分层)} ${esc(cur.分层名称 || '')} · 分数 ${cur.分层分数 || 0}${cur.人工覆盖 ? ' <span class="badge" style="background:#DBEAFE;color:#1E40AF;">人工覆盖中</span>' : ''}</div>
+      </div>
+      ${FG('手动层级', `<select id="sg-code"><option value="">跟随系统</option>${['S', 'A', 'B', 'C'].map(x => `<option${cur.人工分层 === x ? ' selected' : ''}>${x}</option>`).join('')}<option value="NONE"${cur.人工分层 === 'NONE' ? ' selected' : ''}>不跟进</option></select>`)}
+      ${FG('分层备注', `<input id="sg-note" value="${esc(cur.分层备注 || '')}" placeholder="例：每周必须沟通一次">`)}
+      <div style="font-size:12px;color:#6B7280;margin-bottom:12px;">提示：手动层级为「跟随系统」时不覆盖自动结果；选择 S/A/B/C/不跟进 则人工锁定该层级。</div>
+      ${dlgFoot('保存')}
+    `, box => {
+      box.querySelector('#dlgCancel').onclick = dlgClose;
+      box.querySelector('#dlgOk').onclick = async () => {
+        const code = box.querySelector('#sg-code').value;
+        const note = box.querySelector('#sg-note').value.trim();
+        const res = await api.post('/api/student/segment', { studentId: sid, segmentCode: code, riskLevel: '', riskTags: [], note }).catch(() => null);
+        if (!res || !res.ok) return dlgErr((res && res.错误) || '保存失败，可能分层字段迁移未执行');
+        dlgClose(); toast('已保存分层设置');
+        await refresh(); openProfile(sid);
+      };
+    });
+  }
 
   function editStudentDlg(a) { dlg('编辑学员 · ' + a.姓名, `${FG('姓名 <b style="color:#B91C1C">*</b>', `<input id="es-name" value="${esc(a.姓名)}">`)}<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">${FG('联系电话', `<input id="es-phone" value="${esc(a.电话 || '')}">`)}${FG('年级', `<select id="es-grade"><option value=""></option>${GRADES.map(g => `<option${g === a.年级 ? ' selected' : ''}>${g}</option>`).join('')}</select>`)}</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">${FG('性别', `<select id="es-sex"><option value=""></option><option${a.性别 === '男' ? ' selected' : ''}>男</option><option${a.性别 === '女' ? ' selected' : ''}>女</option></select>`)}${FG('备注', `<input id="es-note" value="${esc(a.备注 || '')}">`)}</div>${dlgFoot('保存')}`, box => { box.querySelector('#dlgCancel').onclick = dlgClose; box.querySelector('#dlgOk').onclick = async () => { const body = { id: a.id, 姓名: box.querySelector('#es-name').value.trim(), 电话: box.querySelector('#es-phone').value.trim(), 年级: box.querySelector('#es-grade').value, 性别: box.querySelector('#es-sex').value, 备注: box.querySelector('#es-note').value.trim() }; if (!body.姓名) return dlgErr('姓名必填'); const r = await api.post('/api/student/edit', body); if (!r.ok) return dlgErr(r.错误 || '保存失败'); dlgClose(); await refresh(); if (location.hash.startsWith('#profile/')) openProfile(a.id); else renderStudents(); }; }); }
   function addStudentDlg(familyId = '') {
