@@ -580,7 +580,7 @@ function mapReferrals(d) {
 }
 function feedbackMeta(d) {
   const byLesson = {};
-  (d.feedbacks || []).forEach(f => {
+  (d.feedbacks || []).filter(f => !f.term || f.term === TERM).forEach(f => {
     const L = f.lesson || '第1讲';
     const o = byLesson[L] = byLesson[L] || { lesson: L, lessonTitle: f.lesson_title || '', total: 0, byStatus: {}, classes: {}, teachers: {} };
     o.total++;
@@ -1090,7 +1090,11 @@ module.exports = async (req, res) => {
       let rows = await select('lesson_feedbacks', 'select=*&order=class_name.asc').catch(() => null);
       if (rows === null) return send(res, 200, { ok: true, list: [], msg: '反馈表未建，请先执行建表SQL' });
       const sid = u.query.studentId, cls = u.query.className, les = u.query.lesson;
+      // 学期隔离（PRD 10.1）：显式传 term 则过滤；未传默认当前学期，传 all 则不过滤
+      const tq = u.query.term;
+      const effTerm = tq === 'all' ? '' : (tq || TERM);
       if (sid) rows = rows.filter(r => r.student_id === sid || (r.phone && sid === r.phone));
+      if (effTerm) rows = rows.filter(r => r.term === effTerm);
       if (cls) rows = rows.filter(r => r.class_name === cls);
       if (les) rows = rows.filter(r => r.lesson === les);
       // 催收看板：附带该班"应收反馈"在班人数（最新在册口径）

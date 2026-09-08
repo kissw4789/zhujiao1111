@@ -429,7 +429,7 @@
     const box = $('#pfFeedback');
     if (!box) return;
     box.innerHTML = '<div class="note">加载中…</div>';
-    const r = await api.get('/api/feedback/list?studentId=' + encodeURIComponent(a.id)).catch(() => ({ list: [] }));
+    const r = await api.get('/api/feedback/list?studentId=' + encodeURIComponent(a.id) + '&term=all').catch(() => ({ list: [] }));
     const list = r.list || [];
     box.innerHTML = list.length ? list.map(f => fbCardHtml(f)).join('') : '<div class="note">暂无讲次反馈记录，点击右上角「＋ 录入讲次反馈」手动补录</div>';
     bindFbCopy(box);
