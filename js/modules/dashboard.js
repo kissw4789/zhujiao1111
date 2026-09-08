@@ -126,6 +126,49 @@
     }
   }
 
+  // ---- 学员搜索联动组件：输入姓名 → 自动带出秋季在读班级 ----
+  // 复用 st.ROSTER + st.ENR_BY_ID，纯前端；单班自动填入、多班下拉选择、无在读班留空提示。
+  const currentTerm = () => {
+    try { return Z.utils.curTermLabel(); } catch (e) { return '2026秋'; }
+  };
+  const stuActiveClasses = id => (st.ENR_BY_ID[id] || []).filter(e => !e.is_void && (e.期 === currentTerm() || e.term === currentTerm())).map(e => e.班级).filter(Boolean);
+  function bindStuAutoClass(nameEl, clsEl) {
+    if (!nameEl || !clsEl) return;
+    nameEl.onchange = () => {
+      const val = (nameEl.value || '').trim();
+      if (!val) { clsEl.value = ''; return; }
+      const found = st.ROSTER.find(s => s.姓名 === val);
+      if (!found) return; // 非系统内学员，不打扰，让老板手动填/选
+      const list = [...new Set(stuActiveClasses(found.id))];
+      if (!list.length) { clsEl.value = ''; toast('该学员暂无当前学期在读班，请手动填/选班级', false); return; }
+      if (list.length === 1) { clsEl.value = list[0]; return; }
+      // 多班：下拉让老板选
+      const mk = (label, fn) => {
+        const w = document.createElement('div');
+        w.style.cssText = 'border:1px solid #F59E0B;border-radius:8px;padding:8px 10px;margin:4px 0;background:#FFFBEB;font-size:13px;';
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = label;
+        b.style.cssText = 'margin:2px 6px 2px 0;padding:3px 10px;border:1px solid #F59E0B;border-radius:6px;background:#fff;cursor:pointer;color:#92400E;';
+        b.onclick = () => { fn(); w.remove(); };
+        w.appendChild(b);
+        return w;
+      };
+      const wrap = clsEl.closest('.dlg-body') || clsEl.parentNode;
+      [...wrap.querySelectorAll('[data-autocls]')].forEach(n => n.remove());
+      const label = document.createElement('div');
+      label.textContent = '该学员当前有多个在读班，选择要关联的班：';
+      label.style.cssText = 'font-size:12px;color:#92400E;margin:4px 0;font-weight:600;';
+      label.dataset.autocls = '1';
+      wrap.appendChild(label);
+      list.forEach(c => {
+        const w = mk('✓ ' + c, () => { clsEl.value = c; });
+        w.dataset.autocls = '1';
+        wrap.appendChild(w);
+      });
+    };
+  }
+
   // ---- 待办：新增弹窗（可一键联动登记请假）----
   function openTodoDlg(preset = {}) {
     const kinds = TODO_KINDS.map(k => `<option${preset.kind === k ? ' selected' : ''}>${k}</option>`).join('');
@@ -154,6 +197,7 @@
       const kindSel = box.querySelector('#td-kind');
       const syncLeave = () => { box.querySelector('#td-leaveWrap').style.display = kindSel.value === '请假' ? 'block' : 'none'; };
       kindSel.onchange = syncLeave; syncLeave();
+      bindStuAutoClass(box.querySelector('#td-name'), box.querySelector('#td-cls'));
       box.querySelector('#dlgCancel').onclick = dlgClose;
       box.querySelector('#dlgOk').onclick = async () => {
         const withLeave = box.querySelector('#td-withLeave').checked;
@@ -602,17 +646,10 @@
       const okBtn = box.querySelector('#dlgOk');
       box.querySelector('#dlgCancel').onclick = dlgClose;
       
-      // 当输入姓名时，自动联想匹配班级
+      // 当输入姓名时，自动联动匹配当前学期在读班级（复用 bindStuAutoClass）
       const nameInput = box.querySelector('#lv-name');
       const clsInput = box.querySelector('#lv-class');
-      nameInput.onchange = () => {
-        const val = nameInput.value.trim();
-        const found = st.ROSTER.find(s => s.姓名 === val);
-        if (found && !clsInput.value) {
-          const enrs = st.ENR_BY_ID[found.id] || [];
-          if (enrs.length > 0) clsInput.value = enrs[0].班级 || '';
-        }
-      };
+      bindStuAutoClass(nameInput, clsInput);
 
       okBtn.onclick = async () => {
         let sid = studentId;
