@@ -90,8 +90,14 @@ def main():
     check('Cron 含防重入锁', '__cronLastRunTs' in api and '1分钟内已执行' in api)
     check('同步失败不假装成功', 'syncFailed' in api)
 
-    # 9. 家庭核对轮次（E13）
-    check('家庭核对带轮次键 r{round}', 'assignment_review:r' in api)
+    # 9. 已停用规则（2026-09-09 老板拍板）：家庭核对/反馈催收不再生成、不再出现在界面
+    check('家庭核对生成链路已停用（syncFamilyReviews 空实现）', 'async function syncFamilyReviews' in api and 'assignment_review:r' not in api)
+    check('反馈催收生成链路已停用（syncFeedbackBatches 空实现）', 'async function syncFeedbackBatches' in api and '反馈催收 · ' not in api)
+    check('停用待办统一过滤（isRetiredTodo）', 'isRetiredTodo' in api and 'auto_retired_rule' in api)
+    check('前端过滤停用待办（isRetired）', 'RETIRED_TPL' in dash and "id=\"p-todo\"" in idx)
+    check('界面无家庭核对筛选项', '<option>家庭核对</option>' not in idx and 'familyReviewCard' not in idx)
+    check('界面无老师催收看板入口', 'fbTeacherBtn' not in idx and 'openTeacherFbBoard' not in dash)
+    check('人数统计口径统一为人次（看板字段）', '当期在读人次' in api and '当期在读:' not in api)
 
     print()
     fails = [r for r in RESULTS if not r[1]]

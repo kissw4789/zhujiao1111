@@ -429,13 +429,13 @@ tbody tr:hover { background: #F8FAFC; }
 .kid-card .kk-name { font-weight: 700; font-size: 15px; color: var(--text); margin-bottom: 4px; }
 
 /* ===== 弹窗内表单 ===== */
-#dlgBody input, #dlgBody select, #dlgBody textarea {
+.dlg-b input, .dlg-b select, .dlg-b textarea {
   width: 100%; font-size: 13px; padding: 8px 12px;
   border: 1px solid var(--border); border-radius: 8px;
   background: #fff; color: var(--text); outline: none;
   font-family: inherit;
 }
-#dlgBody input:focus, #dlgBody select:focus, #dlgBody textarea:focus {
+.dlg-b input:focus, .dlg-b select:focus, .dlg-b textarea:focus {
   border-color: var(--border-focus);
   box-shadow: 0 0 0 3px rgba(37,99,235,0.1);
 }

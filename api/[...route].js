@@ -297,8 +297,16 @@ function termOf(dateStr) {
 function stableId(prefix) {
   return `${prefix}-${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`;
 }
+// 统计口径（2026-09-09 老板定稿）：人次 = 有效报名记录数（一学员报一科目记 1 人次，报两科目记 2 人次）；
+// "人"仅用于去重学员数；班级数/家庭数/待办条数是独立维度，禁止与人数混称。
 function activeEnrollment(e) {
   return !!e.student_id && e.term === TERM && !e.is_void && e.active_in_latest !== false && e.source_status !== '历史在班学生';
+}
+// leaves 台账业务类型（2026-09-09）：退费退班与普通请假同表存储，用类型字段而非原因文本前缀区分
+function leaveType(l) {
+  const raw = l.raw || {};
+  if (raw.source === 'refund' || String(l.reason || '').startsWith('退费退班')) return '退费退班';
+  return '请假';
 }
 function validRecentOrder(o) {
   if (o.payment_status !== '已支付') return false;
@@ -396,9 +404,9 @@ function segmentStudent(st, d, now) {
   const first = String(st.first_date || '');
   if (first && ((new Date(now) - new Date(first)) / 86400000 <= 30)) add('NEW_STUDENT', '新学员', 20, '首次报名在近30天内');
   if (es.some(e => Number(e.arrears || 0) > 0)) add('ARREARS', '存在欠费', 35, '报名记录存在欠费');
-  const recentLeave = d.leaves.some(l => l.student_id === st.id && !(l.raw && l.raw.deleted) && String(l.leave_date || '') >= new Date(Date.now() - 14 * 86400000).toISOString().slice(0, 10));
+  const recentLeave = d.leaves.some(l => l.student_id === st.id && leaveType(l) === '请假' && !(l.raw && l.raw.deleted) && String(l.leave_date || '') >= new Date(Date.now() - 14 * 86400000).toISOString().slice(0, 10));
   if (recentLeave) add('ABSENCE', '近期请假/缺课', 20, '近14天有请假或消课记录');
-  if (d.familiesById[st.family_id] && d.familiesById[st.family_id].needs_review) add('FAMILY_REVIEW', '家庭待确认', 25, '家庭归属仍待确认');
+  // 家庭归属核对已由老板于 2026-09-09 拍板停用：不再计入风险标签（FAMILY_REVIEW 下线）
   const related = d.followups.filter(f => f.student_id === st.id);
   const last = related.map(f => f.created_at || '').filter(Boolean).sort().pop() || '';
   const next = related.map(f => f.next_followup_date || (f.raw && f.raw.next_followup_date) || '').filter(Boolean).sort().pop() || '';
@@ -529,6 +537,12 @@ async function patchTodo(t, fields) {
   Object.assign(t, fields, { version: (t.version || 1) + 1 });
 }
 function activeRule(t) { return (t.raw && t.raw.rule) || ''; }
+function isRetiredTodo(t) {
+  const tpl = (t.raw && t.raw.template) || t.template || '';
+  if (['family_check', 'fb_collect'].includes(tpl) || ['家庭核对', '反馈催收'].includes(t.business_type || t.kind || '')) return true;
+  // 手动创建但主题为家庭归属核对的存量事项一并隐藏（2026-09-09 老板拍板全量下线）
+  return /家庭归属|归属核对/.test(String(t.title || ''));
+}
 function tSourceKey(t) { return t.source_key || (t.raw && t.raw.source_key) || ''; }
 
 // 周周期任务（§5.1/§17.2）：确保 S/A 学员本周实例；同周完成不补建（E02）；跨周未结束被覆盖（E05）；
@@ -569,12 +583,13 @@ async function ensureWeeklyTodo(stu, seg, d, now) {
   return { created: 1, tid };
 }
 
-// 请假后续（§8.2/§17.4）：按条生成 leave:{lid}:followup；撤销请假自动取消未处理后续
-async function syncLeaveFollowups(d, now) {
+  // 请假后续（§8.2/§17.4）：按条生成 leave:{lid}:followup；撤销请假自动取消未处理后续
+  // 2026-09-09 口径修正：业务类型以 leaveType 为准（raw.source/refund 或"退费退班"前缀），退费退班不触发请假回访
+  async function syncLeaveFollowups(d, now) {
   let created = 0, cancelled = 0;
   for (const l of (d.leaves || [])) {
     if (l.raw && l.raw.deleted) continue;
-    if (String(l.reason || '').startsWith('退费退班')) continue; // 退费来源不触发请假后续
+    if (leaveType(l) !== '请假') continue; // 退费退班不生成"请假后续"待办
     const skey = `leave:${l.lid}:followup`;
     if ((d.todos || []).some(t => tSourceKey(t) === skey)) continue;
     const due = new Date(dayOf(l.leave_date || now).getTime() + 86400000).toISOString().slice(0, 10);
@@ -600,71 +615,17 @@ async function syncLeaveFollowups(d, now) {
 
 // 反馈批次（§5.4/§8.5/E09/E10）：按 学期|班级|讲次 生成 fb_collect；应收名单来自当次有效名单快照；
 // 全部完成/合理免发自动完成；反馈被撤销自动重开原事项（不建第二条）
+// 2026-09-09 老板拍板停用：反馈催收不再进入待办工作流（催收看板/按班浏览保留），存量批次移出默认队列
 async function syncFeedbackBatches(d, now) {
   const created = [], completed = [], reopened = [];
-  const combos = {};
-  (d.feedbacks || []).forEach(f => { if (!f.class_name || !f.lesson) return; const k = `${f.term || TERM}|${f.class_name}|${f.lesson}`; (combos[k] = combos[k] || []).push(f); });
-  for (const key of Object.keys(combos)) {
-    const [term, cls, lesson] = key.split('|');
-    const rows = combos[key];
-    if (rows.every(r => r.status === '周三未开课')) continue; // 尚未开课不算欠交（E09）
-    const roster = [...new Set(d.enrollments.filter(e => e.class_name === cls && activeEnrollment(e)).map(e => e.student_id))];
-    if (!roster.length) continue;
-    const bySid = {}; roster.forEach(sid => { bySid[sid] = '待反馈'; });
-    const EXCUSED = ['小明班免发', '免发未到课', '试听刚报未上', '请假缺课'];
-    rows.forEach(r => { if (r.student_id && bySid[r.student_id] !== undefined) bySid[r.student_id] = r.status || '待反馈'; });
-    let done = 0, excused = 0, pending = 0;
-    Object.values(bySid).forEach(s => { if (s === '已出反馈') done++; else if (EXCUSED.includes(s)) excused++; else pending++; });
-    const skey = `feedback:${term}:${classKey(cls)}:${lesson}:collection`;
-    const existing = (d.todos || []).find(t => tSourceKey(t) === skey);
-    const progress = `已反馈${done}/${done + excused + pending}${excused ? `·免发${excused}` : ''}·待${pending}`;
-    if (!existing && pending > 0) {
-      const due = await nextWorkdayDate(d, now);
-      const tid = stableId('T');
-      const row = { tid, title: `反馈催收 · ${cls} ${lesson}（待 ${pending} 人）`, kind: '反馈催收', business_type: '课程与反馈', template: 'fb_collect', source: 'system', class_name: cls, note: progress, due_date: due, remind_at: '17:00', status: '待处理', source_key: skey, first_due_date: due, current_due_date: due, creator: '系统', created_at_text: nowText(), biz_ref: { term, class: cls, lesson }, raw: { source: 'system', template: 'fb_collect', rule: 'fb_collect', source_key: skey, term, class: cls, lesson } };
-      try { await writeTodoRow(row); } catch (e) { const dup = (d.todos || []).find(t => tSourceKey(t) === skey); if (dup) { existing = dup; } else throw e; }
-      if (!existing) { await appendEvent(tid, { event_type: 'create', to_status: '待处理', detail: { progress } }); d.todos.push(row); created.push(skey); continue; }
-    }
-    if (existing) {
-      if (pending === 0 && existing.status !== '已完成') {
-        await patchTodo(existing, { status: '已完成', done_text: `反馈全部完成/合理免发（${progress}）`, done_at_text: nowText() });
-        await appendEvent(existing.tid, { event_type: 'complete', from_status: existing.status, to_status: '已完成', result_code: 'auto_all_done', result_note: progress });
-        completed.push(skey);
-      } else if (pending > 0 && existing.status === '已完成') {
-        await patchTodo(existing, { status: '待处理', done_text: '', done_at_text: '' });
-        await appendEvent(existing.tid, { event_type: 'reopen', from_status: '已完成', to_status: '待处理', result_note: `反馈状态变化自动重开（${progress}）`, request_id: `rev-${now}` });
-        reopened.push(skey);
-      } else if (pending > 0 && existing.note !== progress) {
-        await patchTodo(existing, { note: progress, title: `反馈催收 · ${cls} ${lesson}（待 ${pending} 人）` });
-      }
-    }
-  }
   return { created, completed, reopened };
 }
 
 // 家庭核对（§8.6/E12/E13）：按家庭去重 + 轮次键，部分确认不结束，新问题可开新一轮
+// 2026-09-09 老板拍板停用：家庭归属已人工处理完毕，系统不再自动生成核对轮次；
+// 函数保留但恒返回空，存量待办在 mapTodos 阶段统一移出工作队列（不物理删除）
 async function syncFamilyReviews(d, now) {
   let created = 0, completed = 0;
-  const pendingByFam = {};
-  d.enrollments.forEach(e => { if (e.family_id && !e.student_id) (pendingByFam[e.family_id] = pendingByFam[e.family_id] || []).push(e); });
-  for (const fam of d.families) {
-    const round = fam.review_round || 1;
-    const skey = `family:${fam.family_id}:assignment_review:r${round}`;
-    const existing = (d.todos || []).find(t => tSourceKey(t) === skey);
-    const pend = pendingByFam[fam.family_id] || [];
-    if (pend.length && !existing) {
-      const due = fridayOfThisWeek(now);
-      const tid = stableId('T');
-      const row = { tid, title: `家庭归属确认 · ${fam.source_name || fam.family_id}（待确认 ${pend.length} 条）`, kind: '家庭核对', business_type: '家庭核对', template: 'family_check', source: 'system', note: `第 ${round} 轮核对`, due_date: due, remind_at: '17:00', status: '待处理', source_key: skey, first_due_date: due, current_due_date: due, creator: '系统', created_at_text: nowText(), biz_ref: { familyId: fam.family_id, round }, raw: { source: 'system', template: 'family_check', rule: 'family_check', source_key: skey, family_id: fam.family_id, round } };
-      try { await writeTodoRow(row); } catch (e) { const dup = (d.todos || []).find(t => tSourceKey(t) === skey); if (dup) { existing = dup; } else throw e; }
-      if (!existing) { await appendEvent(tid, { event_type: 'create', to_status: '待处理' }); d.todos.push(row); created++; continue; }
-    }
-    if (!pend.length && existing && existing.status === '待处理') {
-      await patchTodo(existing, { status: '已完成', done_text: '全部待确认报名已分配', done_at_text: nowText() });
-      await appendEvent(existing.tid, { event_type: 'complete', from_status: '待处理', to_status: '已完成', result_code: 'auto_resolved' });
-      completed++;
-    }
-  }
   return { created, completed };
 }
 
@@ -687,7 +648,7 @@ async function wakeOverdueHolds(d, now) {
 // 旧 seg:风险事件待办：条件解除自动关闭（不删除）；费用类保留原状态仅退出默认队列（§17.6）
 async function cancelClearedRiskTodos(d, now) {
   let n = 0;
-  const recentLeave = sid => d.leaves.some(l => l.student_id === sid && !(l.raw && l.raw.deleted) && !(l.raw && l.raw.source === 'refund') && String(l.leave_date || '') >= new Date(Date.now() - 14 * 86400000).toISOString().slice(0, 10));
+  const recentLeave = sid => d.leaves.some(l => l.student_id === sid && leaveType(l) === '请假' && !(l.raw && l.raw.deleted) && String(l.leave_date || '') >= new Date(Date.now() - 14 * 86400000).toISOString().slice(0, 10));
   const pendingFb = sid => d.feedbacks.some(f => f.student_id === sid && f.term === TERM && f.status && f.status !== '已出反馈' && !['小明班免发', '免发未到课', '试听刚报未上', '请假缺课', '周三未开课'].includes(f.status));
   const famNeed = famId => { const f = d.familiesById[famId]; return !!(f && f.needs_review); };
   const refPending = sid => (d.referrals || []).some(r => (r.student_id === sid) && !['已报名', '已流失'].includes(r.status));
@@ -802,6 +763,18 @@ async function reconcileTodos(d, now, opts = {}) {
     try { const r = await syncFeedbackBatches(d, now); sum.新增反馈批次 = r.created.length; sum.完成反馈批次 = r.completed.length; sum.重开反馈批次 = r.reopened.length; } catch (e) { sum.失败++; }
     try { const r = await syncFamilyReviews(d, now); sum.新增家庭核对 = r.created; sum.完成家庭核对 = r.completed; } catch (e) { sum.失败++; }
     try { sum.关闭失效 = await cancelClearedRiskTodos(d, now); } catch (e) { sum.失败++; }
+    // 2026-09-09 老板拍板下线的两类系统待办（家庭核对 family_check / 反馈催收 fb_collect）：
+    // 存量未结束实例统一自动关闭留痕，不再出现在任何工作队列
+    const retired = (d.todos || []).filter(t => {
+      const tpl = (t.raw && t.raw.template) || t.template || '';
+      return ['family_check', 'fb_collect'].includes(tpl) && WF_ACTIVE.includes(t.status || '待处理');
+    });
+    for (const t of retired) {
+      try {
+        await patchTodo(t, { status: '已取消', cancel_reason: '该类系统待办已停用（2026-09-09 老板拍板），自动关闭', done_at_text: nowText() });
+        await appendEvent(t.tid, { event_type: 'cancel', from_status: t.status, to_status: '已取消', result_code: 'auto_retired_rule' });
+      } catch (e) { sum.失败++; }
+    }
   }
   return sum;
 }
@@ -934,7 +907,7 @@ function homeData(d, now) {
   const weekday = weekDayNames[new Date(Date.now() + CN_TZ).getUTCDay()];
   const todayClasses = classRows(d).filter(s => s.星期 === weekday);
   // ===== 2026-09-09 统一待办工作流：首页改为"今天先做什么"（PRD §11）=====
-  const todos = (d.todos || []).filter(t => activeRule(t) !== 'arrears'); // 费用类退出默认队列（§17.6），历史可在排除范围查询
+  const todos = (d.todos || []).filter(t => activeRule(t) !== 'arrears' && !isRetiredTodo(t)); // 停用规则与费用类退出默认队列（§17.6），历史可在排除范围查询
   const stOf = t => t.status || '待处理';
   const curDue = t => t.current_due_date || t.due_date || '';
   const nextAct = t => t.next_action_date || '';
@@ -972,12 +945,11 @@ function homeData(d, now) {
     今天: now,
     星期: weekday,
     当期: cur,
-    看板: { 当期在读: active.length, 当期班级: classes.size, 去重学生: kids.size },
+    看板: { 当期在读人次: active.length, 当期班级: classes.size, 去重学生: kids.size },
     今日排课: todayClasses,
     今日待办: [
       { type: '今天必须处理', count: mustDo.length, text: `今天必须处理 ${mustDo.length} 条（逾期 ${todos.filter(isOver).length}）` },
       { type: '已暂缓到期', count: todos.filter(holdDue).length, text: '' },
-      { type: '反馈批次未收齐', count: todos.filter(t => (t.template || '') === 'fb_collect' && WF_ACTIVE.includes(stOf(t))).length, text: '' },
     ],
     今天必须处理: mustDo.map(todoLite),
     未来7天: next7.map(todoLite),
@@ -989,7 +961,7 @@ function homeData(d, now) {
   };
 }
 function mapLeaves(d) {
-  return d.leaves.filter(x => !(x.raw && x.raw.deleted)).map(x => ({ lid: x.lid, studentId: x.student_id, 姓名: x.student_name, 班级: x.class_name, 日期: x.leave_date, 原因: x.reason, 折算金额: x.refund_amount, 备注: x.note, 创建时间: x.created_at_text || x.created_at }));
+  return d.leaves.filter(x => !(x.raw && x.raw.deleted)).map(x => ({ lid: x.lid, studentId: x.student_id, 姓名: x.student_name, 班级: x.class_name, 日期: x.leave_date, 原因: x.reason, 折算金额: x.refund_amount, 备注: x.note, 创建时间: x.created_at_text || x.created_at, 类型: leaveType(x) }));
 }
 function mapFollowups(d) {
   return (d.followups || []).map(f => ({
@@ -1008,6 +980,7 @@ function mapFollowups(d) {
 function mapTodos(d) {
   const norm = s => (s === '待办' ? '待处理' : (s || '待处理'));
   return (d.todos || []).map(t => {
+    if (isRetiredTodo(t)) return null;
     const skey = tSourceKey(t);
     return {
       tid: t.tid,
@@ -1038,7 +1011,7 @@ function mapTodos(d) {
       version: t.version || 1,
       bizRef: t.biz_ref || {},
     };
-  });
+  }).filter(Boolean);
 }
 // ===== 2026-09-08 转介绍跟进 =====
 function mapReferrals(d) {
@@ -1063,25 +1036,27 @@ function mapReferrals(d) {
 }
 function feedbackMeta(d) {
   const byLesson = {};
+  // 反馈进度按当讲次已落库的反馈记录统计人次：同学员跨科/跨班各计 1 人次；
+  // 不以当前有效报名回算，避免后续转班或新报名把历史第 1 讲 299 人次膨胀为 305。
   (d.feedbacks || []).filter(f => !f.term || f.term === TERM).forEach(f => {
     const L = f.lesson || '第1讲';
-    const o = byLesson[L] = byLesson[L] || { lesson: L, lessonTitle: f.lesson_title || '', total: 0, byStatus: {}, classes: {}, teachers: {} };
-    o.total++;
+    const o = byLesson[L] = byLesson[L] || { lesson: L, lessonTitle: f.lesson_title || '', total: 0, byStatus: {}, classes: {}, teachers: {}, _seen: {} };
+    const key = `${f.class_name || ''}|${f.student_id || f.fid || ''}`;
+    if (!f.class_name || o._seen[key]) return;
+    o._seen[key] = true;
     const stt = f.status || '未标记';
+    o.total++;
     o.byStatus[stt] = (o.byStatus[stt] || 0) + 1;
-    if (f.class_name) {
-      const c = o.classes[f.class_name] = o.classes[f.class_name] || { total: 0, done: 0, teacher: f.teacher || '', byStatus: {} };
-      c.total++;
-      c.byStatus[stt] = (c.byStatus[stt] || 0) + 1;
-      if (stt === '已出反馈') c.done++;
-    }
-    if (f.teacher) {
-      const t = o.teachers[f.teacher] = o.teachers[f.teacher] || { total: 0, done: 0 };
-      t.total++;
-      if (stt === '已出反馈') t.done++;
-    }
+    const c = o.classes[f.class_name] = o.classes[f.class_name] || { total: 0, done: 0, teacher: f.teacher || '', byStatus: {} };
+    c.total++;
+    c.byStatus[stt] = (c.byStatus[stt] || 0) + 1;
+    if (stt === '已出反馈') c.done++;
+    const teacherName = f.teacher || '未标注老师';
+    const teacher = o.teachers[teacherName] = o.teachers[teacherName] || { total: 0, done: 0 };
+    teacher.total++;
+    if (stt === '已出反馈') teacher.done++;
   });
-  return Object.values(byLesson);
+  return Object.values(byLesson).map(o => { delete o._seen; return o; });
 }
 function bootstrapData(d, now) {
   return {
@@ -1171,7 +1146,7 @@ async function handlePost(p, body, d) {
       return { ok: true, item: { tid: t2.tid, 联动请假单: lid } };
     }
     // 手动待办：默认待处理，business_type 由类型映射
-    const bizMap = { '跟进': '跟进', '请假': '请假与补课', '请假与补课': '请假与补课', '调课': '调课与转班', '调课与转班': '调课与转班', '反馈催收': '课程与反馈', '课程与反馈': '课程与反馈', '家庭核对': '家庭核对', '其他': '手动事项', '手动事项': '手动事项' };
+    const bizMap = { '跟进': '跟进', '请假': '请假与补课', '请假与补课': '请假与补课', '调课': '调课与转班', '调课与转班': '调课与转班', '课程与反馈': '课程与反馈', '其他': '手动事项', '手动事项': '手动事项' };
     const biz = bizMap[body.类型] || '手动事项';
     const due = body.截止 || today();
     const tid = stableId('T');
@@ -1192,6 +1167,7 @@ async function handlePost(p, body, d) {
     if (!tid) return { ok: false, 错误: '缺少tid' };
     const todo = (d.todos || []).find(t => t.tid === tid);
     if (!todo) return { ok: false, 错误: '没有这条待办' };
+    if (isRetiredTodo(todo)) return { ok: false, 错误: '该类待办已停用，不再支持处理' };
     const action = String(body.action || 'complete').trim();
     const reqId = String(body.requestId || '').trim();
     // 幂等：同 tid+requestId 重放返回原结果
@@ -1400,7 +1376,8 @@ async function handlePost(p, body, d) {
   }
   if (p === '/api/enrollment/refund') {
     await patch('enrollments', `eid=eq.${q(body.eid || '')}`, { is_void: true, updated_at: new Date().toISOString() });
-    // 退费退班同步落 leaves 消课台账（与请假同表，便于统一统计折算/消课金额）
+    // 退费退班同步落 leaves 消课台账（与请假同表，用 raw.source='refund' 标记业务类型；
+    // 2026-09-09 口径修正：退费不生成请假后续待办，mapLeaves 输出类型供台账区分）
     if (body.studentName || body.studentId) {
       await upsert('leaves', {
         lid: stableId('L'),
@@ -1662,7 +1639,8 @@ async function handlePost(p, body, d) {
     }
     return { ok: true, 已转班: enr.length, tid: t ? t.tid : '' };
   }
-  // ===== 2026-09-09 家庭归属分配（§8.6/E12/E13）：分配待确认报名给学员后自动完成家庭核对轮次 =====
+  // ===== 2026-09-09 家庭归属分配（§8.6/E12/E13）：分配待确认报名给学员 =====
+  // 前端分配交互已随家庭核对下线移除；端点保留仅供一次性数据修复脚本使用，不再自动完成核对轮次
   if (p === '/api/family/assign') {
     if (!wf) return { ok: false, __status: 400, 错误: WF_MIGRATE_HINT };
     if (!body.eid || !body.studentId) return { ok: false, 错误: '缺少 eid/studentId' };
@@ -1675,16 +1653,6 @@ async function handlePost(p, body, d) {
     const famId = st.family_id || e.family_id;
     const remain = d.enrollments.filter(x => x.family_id === famId && !x.student_id && x.eid !== body.eid).length;
     await log('家庭归属分配', { 对象: st.name, 班级: e.class_name || '', 变更: `eid:${body.eid} · 剩余待确认 ${remain}` });
-    if (!remain) {
-      // 全部确认 → needs_review=false 且 round+1，下次新问题可开新一轮（E13）
-      await patch('families', `family_id=eq.${q(famId)}`, { needs_review: false, review_round: ((d.familiesById[famId] || {}).review_round || 1) + 1 });
-      const skey = `family:${famId}:assignment_review:r${(d.familiesById[famId] || {}).review_round || 1}`;
-      const t = (d.todos || []).find(x => tSourceKey(x) === skey && WF_ACTIVE.includes(x.status || '待处理'));
-      if (t) {
-        await patchTodo(t, { status: '已完成', done_text: '全部待确认报名已分配', done_at_text: nowText() });
-        await appendEvent(t.tid, { event_type: 'complete', from_status: t.status, to_status: '已完成', result_code: 'auto_resolved' });
-      }
-    }
     return { ok: true, 剩余待确认: remain, famId };
   }
   // ===== 2026-09-09 课历导入（§17.5）：行级校验，缺日期/班级/讲次禁止导入（禁止猜测日期）=====
@@ -1812,6 +1780,7 @@ module.exports = async (req, res) => {
       if (type) rows = rows.filter(t => (t.business_type || t.kind || '') === type);
       if (kw) rows = rows.filter(t => (t.title || '').toLowerCase().includes(kw) || (t.student_name || '').toLowerCase().includes(kw) || (t.class_name || '').toLowerCase().includes(kw));
       if (excludeArrears) rows = rows.filter(t => activeRule(t) !== 'arrears');
+      rows = rows.filter(t => !isRetiredTodo(t)); // 停用规则的历史待办不出现在任何界面（数据库留痕可查）
       const total = rows.length;
       const slice = rows.slice((page - 1) * size, page * size);
       return send(res, 200, { ok: true, total, page, size, list: mapTodos({ todos: slice }) });
@@ -1820,8 +1789,9 @@ module.exports = async (req, res) => {
     if (p === '/api/todo/detail') {
       const tid = String(u.query.id || '').trim();
       if (!tid) return send(res, 400, { ok: false, 错误: '缺少id' });
-      const t = (d.todos || []).find(x => x.tid === tid);
-      if (!t) return send(res, 404, { ok: false, 错误: '没有这条待办' });
+    const t = (d.todos || []).find(x => x.tid === tid);
+    if (!t) return send(res, 404, { ok: false, 错误: '没有这条待办' });
+    if (isRetiredTodo(t)) return send(res, 410, { ok: false, 错误: '该类待办已停用（家庭核对/反馈催收），历史事件保留在数据库中' });
       const evs = (d.events || []).filter(e => e.tid === tid).sort((a, b) => String(a.occurred_at || '').localeCompare(String(b.occurred_at || '')));
       return send(res, 200, { ok: true, item: mapTodos({ todos: [t] })[0], events: evs });
     }
