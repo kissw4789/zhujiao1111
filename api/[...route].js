@@ -412,7 +412,7 @@ function segmentStudent(st, d, now) {
   const autoCode = score >= 65 ? 'S' : score >= 25 ? 'A' : active.length ? 'B' : 'C';
   const labels = { S: '重点维护', A: '优先跟进', B: '常规维护', C: '低频维护' };
   const effectiveCode = manualCode || autoCode;
-  return { 自动分层: autoCode, 自动分层名称: labels[autoCode], 分层: effectiveCode, 分层名称: labels[effectiveCode] || effectiveCode, 分层分数: score, 风险标签: tags, 分层依据: reasons, 最近跟进: last, 下次跟进: next, 未完成动作数: (d.todos || []).filter(t => t.student_id === st.id && WF_ACTIVE.includes(t.status || '待处理') && activeRule(t) !== 'arrears').length, 人工覆盖: !!manualCode, segmentVersion: st.segment_version || 1 };
+  return { 自动分层: autoCode, 自动分层名称: labels[autoCode], 分层: effectiveCode, 分层名称: labels[effectiveCode] || effectiveCode, 分层分数: score, 风险标签: tags, 分层依据: reasons, 最近跟进: last, 下次跟进: next, 未完成动作数: (d.todos || []).filter(t => t.student_id === st.id && WF_ACTIVE.includes(t.status || '待处理') && activeRule(t) !== 'arrears').length, 人工覆盖: !!manualCode, segmentVersion: st.segment_version != null ? Number(st.segment_version) : 1 };
 }
 function segmentationActions(st, seg, d) {
   // 2026-09-09 统一待办工作流：系统动作改由 reconcileTodos 统一生成
