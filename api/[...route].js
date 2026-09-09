@@ -710,6 +710,8 @@ async function cancelClearedRiskTodos(d, now) {
   return n;
 }
 
+// 暂缓唤醒：小量且不频繁，保持串行即可（通常远小于 30s）
+
 // 助教工作日配置（§17.5）：未配置时使用"课后次日 17:00"并明确该默认策略
 let __wdCache = { t: 0, cfg: null };
 async function workdayConfig(d) {
@@ -772,18 +774,28 @@ async function reconcileTodos(d, now, opts = {}) {
   const sum = { 唤醒: 0, 新增周期: 0, 取消周期: 0, 新增反馈批次: 0, 完成反馈批次: 0, 重开反馈批次: 0, 新增家庭核对: 0, 完成家庭核对: 0, 新增请假后续: 0, 取消请假后续: 0, 关闭失效: 0, 失败: 0 };
   try { sum.唤醒 = await wakeOverdueHolds(d, now); } catch (e) { sum.失败++; }
   const targets = opts.studentId ? (d.students || []).filter(s => s.id === opts.studentId) : (d.students || []);
-  for (const stu of targets) {
-    const seg = segmentStudent(stu, d, now);
-    const weeklies = (d.todos || []).filter(t => t.student_id === stu.id && (((t.raw && t.raw.template) === 'weekly_followup') || tSourceKey(t).includes(':weekly_followup:')));
-    if (['S', 'A'].includes(seg.分层)) {
-      try { const r = await ensureWeeklyTodo(stu, seg, d, now); if (r.created) sum.新增周期++; else if (!r.covered) sum.取消周期 += 0; } catch (e) { sum.失败++; }
-    } else {
-      for (const t of weeklies) {
-        if (t.status === '待处理') {
-          try { await patchTodo(t, { status: '已取消', cancel_reason: '分级变化自动取消', done_at_text: nowText() }); await appendEvent(t.tid, { event_type: 'cancel', from_status: '待处理', to_status: '已取消', result_note: `分级调整为 ${seg.分层}，未开始的周期跟进自动取消（处理中/已暂缓及风险事项保留）` }); sum.取消周期++; } catch (e) { sum.失败++; }
+  // 大批量时按批并发（Serverless 30s 预算：逐学员串行会超时；每批 25 个并行，幂等靠 source_key 唯一索引兜底）
+  const BATCH = opts.studentId ? targets.length : 25;
+  for (let i = 0; i < targets.length; i += BATCH) {
+    const slice = targets.slice(i, i + BATCH);
+    await Promise.all(slice.map(async (stu) => {
+      try {
+        const seg = segmentStudent(stu, d, now);
+        const weeklies = (d.todos || []).filter(t => t.student_id === stu.id && (((t.raw && t.raw.template) === 'weekly_followup') || tSourceKey(t).includes(':weekly_followup:')));
+        if (['S', 'A'].includes(seg.分层)) {
+          const r = await ensureWeeklyTodo(stu, seg, d, now);
+          if (r && r.created) sum.新增周期++;
+        } else {
+          for (const t of weeklies) {
+            if (t.status === '待处理') {
+              await patchTodo(t, { status: '已取消', cancel_reason: '分级变化自动取消', done_at_text: nowText() });
+              await appendEvent(t.tid, { event_type: 'cancel', from_status: '待处理', to_status: '已取消', result_note: `分级调整为 ${seg.分层}，未开始的周期跟进自动取消（处理中/已暂缓及风险事项保留）` });
+              sum.取消周期++;
+            }
+          }
         }
-      }
-    }
+      } catch (e) { sum.失败++; }
+    }));
   }
   if (!opts.studentId) {
     try { const r = await syncLeaveFollowups(d, now); sum.新增请假后续 = r.created; sum.取消请假后续 = r.cancelled; } catch (e) { sum.失败++; }
