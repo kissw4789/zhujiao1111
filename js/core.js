@@ -185,30 +185,67 @@
     box._t = setTimeout(() => { box.style.display = 'none'; }, 2400);
   };
 
+  // ===== 2026-09-09 弹窗栈（PRD §9.3：嵌套不覆盖上层、未保存内容关闭/返回时提示）=====
+  const dlgStack = [];
   const dlg = (title, bodyHtml, onMount) => {
-    const mask = ensureEl('dlgMask', '');
-    mask.className = 'mask';
-    mask.innerHTML = `<div class="dlg"><div class="dlg-h"><span id="dlgTitle"></span><span id="dlgX">✕</span></div><div class="dlg-b" id="dlgBody"></div></div>`;
-    qs('#dlgTitle').textContent = title;
-    qs('#dlgBody').innerHTML = bodyHtml;
-    qs('#dlgX').onclick = () => dlgClose();
-    // 2026-09-08: 遮罩区不再可点击关闭(防误触丢失表单),只允许点 ✕ / 取消
-    onMount && onMount(qs('#dlgBody'));
+    const mask = document.createElement('div');
+    mask.className = 'mask hide dlg-layer';
+    mask.style.zIndex = String(9100 + dlgStack.length);
+    mask.innerHTML = `<div class="dlg"><div class="dlg-h"><span class="dlg-title"></span><span class="dlg-x">✕</span></div><div class="dlg-b dlg-body"></div></div>`;
+    document.body.appendChild(mask);
+    mask.querySelector('.dlg-title').textContent = title;
+    const body = mask.querySelector('.dlg-b');
+    body.innerHTML = bodyHtml;
+    const state = { dirty: false };
+    body.addEventListener('input', () => { state.dirty = true; });
+    body.addEventListener('change', () => { state.dirty = true; });
+    const close = () => {
+      if (state.dirty && !confirm('弹窗中有未保存的内容，确定放弃关闭？')) return;
+      mask.classList.add('hide');
+      const i = dlgStack.indexOf(mask);
+      if (i >= 0) dlgStack.splice(i, 1);
+      setTimeout(() => mask.remove(), 160);
+    };
+    // 关闭只认 ✕ 与「取消」，遮罩区不关（防误触丢失表单，2026-09-08 既有约定）
+    mask.querySelector('.dlg-x').onclick = close;
+    dlgStack.push(mask);
     mask.classList.remove('hide');
+    onMount && onMount(body, close);
+    return body;
   };
-  const dlgClose = () => { const mask = document.getElementById('dlgMask'); if (mask) mask.classList.add('hide'); };
-  const dlgErr = msg => { const el = qs('#dlgErr'); if (el) el.textContent = msg; };
+  const dlgClose = () => {
+    const top = dlgStack[dlgStack.length - 1];
+    if (top) top.querySelector('.dlg-x').click();
+    else { const m = document.getElementById('dlgMask'); if (m) m.classList.add('hide'); }
+  };
+  const dlgErr = msg => {
+    const top = dlgStack[dlgStack.length - 1];
+    const el = top ? top.querySelector('#dlgErr') : document.getElementById('dlgErr');
+    if (el) el.textContent = msg;
+  };
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && dlgStack.length) dlgClose(); });
   const FG = (label, inner, hint) => `<div style="margin-bottom:12px;"><label style="display:block;font-size:12px;font-weight:700;color:var(--text-muted);margin-bottom:4px;">${label}</label>${inner}${hint ? `<div class="note" style="margin-top:3px">${hint}</div>` : ''}</div>`;
   const dlgFoot = okText => `<div class="dlg-err" id="dlgErr" style="color:#DC2626;font-size:12px;margin:8px 0;"></div><div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;"><span class="btn sub" id="dlgCancel">取消</span><span class="btn" id="dlgOk">${okText}</span></div>`;
 
   const showPage = id => {
+    // 离开当前页前记录滚动位置（PRD §9.2 上下文恢复）
+    if (state.currentPage && id !== state.currentPage) {
+      ctxCache.current = { page: state.currentPage, scrollY: window.scrollY };
+      try { sessionStorage.setItem('zj-ctx-' + state.currentPage, JSON.stringify(ctxCache.current)); } catch (e) {}
+    }
     state.currentPage = id;
     qsa('.page').forEach(p => p.classList.add('hide'));
     const t = document.getElementById('p-' + id);
     if (t) t.classList.remove('hide');
     qsa('.side .ni').forEach(n => n.classList.toggle('on', n.dataset.p === id));
-    window.scrollTo(0, 0);
+    // 恢复该页滚动位置
+    try {
+      const saved = JSON.parse(sessionStorage.getItem('zj-ctx-' + id) || 'null');
+      if (saved && typeof saved.scrollY === 'number') setTimeout(() => window.scrollTo(0, saved.scrollY), 30);
+      else window.scrollTo(0, 0);
+    } catch (e) { window.scrollTo(0, 0); }
   };
+  const ctxCache = { current: null };
 
   const buildIndices = () => {
     state.ENR_BY_ID = {};
@@ -306,24 +343,71 @@
     route();
   };
 
+  // ===== 2026-09-09 统一导航层（PRD §9：navigate/back/closeCurrent，来源与上下文恢复）=====
+  const NAV_KEY = 'zj-nav-stack';
+  let navStack = [];
+  const navLoad = () => { try { const s = sessionStorage.getItem(NAV_KEY); if (s) { const arr = JSON.parse(s); if (Array.isArray(arr)) navStack = arr; } } catch (e) {} };
+  const navSave = () => { try { sessionStorage.setItem(NAV_KEY, JSON.stringify(navStack.slice(-40))); } catch (e) {} };
+  const parseHash = h => {
+    // 拆出 path 与 query：如 todo?type=flw&status=active / todo/T123
+    // 注意：调用方通常已对 hash 整体 decode 过，这里不再二次 decode path；query 由 URLSearchParams 自动解
+    const qi = h.indexOf('?');
+    let path = h, query = {};
+    if (qi >= 0) { path = h.slice(0, qi); new URLSearchParams(h.slice(qi + 1)).forEach((v, k) => { query[k] = v; }); }
+    return { path, query };
+  };
+  const navGo = (target, opts = {}) => {
+    target = String(target || 'home').replace(/^#/, '');
+    const { path } = parseHash(target);
+    const from = { page: state.currentPage, route: location.hash.replace(/^#/, '') || 'home', scrollY: window.scrollY };
+    if (!opts.replace) { navStack.push(from); navSave(); }
+    if (opts.context) { try { sessionStorage.setItem('zj-ctx-page-' + (parseHash(path).path.split('/')[0]), JSON.stringify(opts.context)); } catch (e) {} }
+    if (path.startsWith('profile/') || path.startsWith('family/') || path.startsWith('todo')) {
+      // 直接跳转保持浏览器历史一致（hash 变化即可）
+    }
+    if (location.hash === '#' + target) route();
+    else location.hash = '#' + target;
+  };
+  const navBack = () => {
+    const prev = navStack.pop(); navSave();
+    if (prev && prev.route) {
+      if (location.hash === '#' + prev.route) route();
+      else if (window.history.length > 1) window.history.back();
+      else location.hash = '#' + prev.route;
+    } else {
+      if (window.history.length > 1) window.history.back();
+      else location.hash = '#home';
+    }
+    // 恢复来源页滚动
+    if (prev && typeof prev.scrollY === 'number') setTimeout(() => window.scrollTo(0, prev.scrollY), 50);
+  };
+  const closeCurrent = () => dlgClose();
+
   const route = () => {
-    let h = '';
-    try { h = decodeURIComponent(location.hash.replace(/^#/, '')); } catch (e) { h = ''; toast('链接格式无效，已返回首页', false); }
-    if (h.startsWith('profile/')) {
+    let raw = '';
+    try { raw = decodeURIComponent(location.hash.replace(/^#/, '')); } catch (e) { raw = ''; toast('链接格式无效，已返回首页', false); }
+    const { path, query } = parseHash(raw);
+    if (path.startsWith('profile/')) {
       showPage('profile');
-      Z.modules && Z.modules.openProfile && Z.modules.openProfile(h.slice(8));
+      Z.modules && Z.modules.openProfile && Z.modules.openProfile(path.slice(8));
       return;
     }
-    if (h.startsWith('family/')) {
+    if (path.startsWith('family/')) {
       showPage('family');
-      Z.modules && Z.modules.openFamily && Z.modules.openFamily(h.slice(7));
+      Z.modules && Z.modules.openFamily && Z.modules.openFamily(path.slice(7));
       return;
     }
-    if (h) {
+    if (path.startsWith('todo')) {
+      const rest = path.slice(4).replace(/^\//, '');
+      showPage('todo');
+      Z.modules && Z.modules.onTodoRoute && Z.modules.onTodoRoute(rest, query);
+      return;
+    }
+    if (raw) {
       const valid = ['home', 'sch', 'stu', 'leave', 'flw', 'ref', 'oln'];
-      if (!valid.includes(h)) h = 'home';
-      showPage(h);
-      Z.modules && Z.modules.onPage && Z.modules.onPage(h);
+      if (!valid.includes(path)) { toast('未找到该页面，已回到首页', false); path = 'home'; }
+      showPage(path);
+      Z.modules && Z.modules.onPage && Z.modules.onPage(path);
       return;
     }
     showPage('home');
@@ -333,5 +417,7 @@
   Z.utils = { esc, todayStr, curTermLabel, termDispL, termOf, fmtMoney, toMoney, normalizeTeacher, normalizeSubject, classType, normalizedClassName, stableHash, SEASON_NAME, TEACHER_ALIASES, GRADES, GRADE_ORDER, TYPE_COLOR, SUBJ_COLOR, SYS_SUBJECT };
   Z.api = { request: api, get, post, put, del };
   Z.ui = { qs, qsa, ensureEl, renderPager, toast, dlg, dlgClose, dlgErr, FG, dlgFoot, showPage };
+  Z.nav = { go: navGo, back: navBack, closeCurrent, route };
   Z.bootstrap = { loadAllData, ensureAuth, afterLogin, route, buildIndices };
+  navLoad();
 })();
