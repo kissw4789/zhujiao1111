@@ -1227,8 +1227,8 @@ function segBadge(lv) {
       if (tabName !== '全部动态') list = list.filter(item => item.subject === tabName || item.subject === '全科');
       const box = $('#pfFollowList');
       if (!box) return;
-      box.innerHTML = list.length ? `<div style="display:flex;flex-direction:column;gap:12px;">` + list.map(item => `
-        <div style="background:#F9FAFB;border:1px solid #E2E8F0;border-left:4px solid #2563EB;border-radius:6px;padding:12px 14px;">
+      box.innerHTML = list.length ? `<div style="display:flex;flex-direction:column;gap:10px;">` + list.map(item => `
+        <div style="background:#FAFAFC;border:1px solid #E2E8F0;border-radius:6px;padding:12px 14px;">
           <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:12px;color:#6B7280;">
             <span><b style="color:#111827;font-size:13px;">${esc(item.type)}</b> · <span class="badge blue">${esc(item.subject || '全科')}</span> 由 ${esc(item.creator || '助教')} 记录</span>
             <span>${esc(item.createdAt ? item.createdAt.slice(0, 16).replace('T', ' ') : '')}</span>
